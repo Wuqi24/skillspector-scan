@@ -434,6 +434,22 @@ print(os.getenv("T"))
   if ($dangerHook.Count -lt 1 -or $dangerHook[0].severity -ne 'critical' -or $dangerHook[0].confidence -ne 'high' -or $safeHook.Count -lt 1 -or $safeHook[0].severity -ne 'suspicious' -or $safeHook[0].confidence -ne 'medium') {
     Write-Host 'FAIL INSTALL_HOOK 分层'; $fail++
   } else { Write-Host 'OK INSTALL_HOOK 分层（危险 critical/high，构建钩子 suspicious/medium）' }
+
+  # 30) OBFUSCATION 语境边界：config 超长单行不触发；doc_code 超长单行触发且 confidence=low
+  $ob2 = Join-Path $tmp 'obf2-skill'
+  New-Item -ItemType Directory -Force -Path $ob2 | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ob2 'SKILL.md') -Value "---`nname: obf2-skill`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllText((Join-Path $ob2 'package-lock.json'), ('x' * 2500))
+  $r = Invoke-BriefJson $ob2
+  $t = $r.Target
+  $obfConfig = @($t.findings | Where-Object { $_.id -eq 'OBFUSCATION' -and $_.file -like '*package-lock.json' })
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ob2 'README.md') -Value ('# t' + "`n`n" + '```js' + "`n" + ('y' * 2500) + "`n" + '```')
+  $r2 = Invoke-BriefJson $ob2
+  $t2 = $r2.Target
+  $obfDoc = @($t2.findings | Where-Object { $_.id -eq 'OBFUSCATION' -and $_.context -eq 'doc_code' })
+  if ($obfConfig.Count -gt 0 -or $obfDoc.Count -lt 1 -or $obfDoc[0].confidence -ne 'low') {
+    Write-Host ("FAIL OBFUSCATION 语境边界: configHit=" + $obfConfig.Count + " docHit=" + $obfDoc.Count + " conf=" + $obfDoc[0].confidence); $fail++
+  } else { Write-Host 'OK OBFUSCATION 语境边界（config 不触发，doc_code 触发且 low）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -1305,14 +1305,18 @@ function Invoke-ScanPath {
       # OBFUSCATION 补充启发式：非注释/非文档超长单行（简报模式，阈值可配置）
       if ($briefMode -and -not $lineHasObf -and $line.Length -gt $obfLen -and -not $commentLines.ContainsKey($ln)) {
         $fctx2 = if ($context -eq 'doc' -and $fenceSet.ContainsKey($ln)) { 'doc_code' } else { $context }
-        $doc2 = $false
-        if ($self) { $doc2 = $true }
-        elseif ($fctx2 -eq 'doc_code') { $doc2 = $false }
-        elseif ($fctx2 -in @('comment', 'doc')) { $doc2 = $true }
-        $exec2 = if ($fctx2 -eq 'doc_code') { 'documented' } elseif ($context -eq 'code') { 'executable' } else { 'unknown' }
-        $snip = $line
-        if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) + '…' }
-        [void]$findings.Add((New-Finding -id 'OBFUSCATION' -severity 'suspicious' -file $f.FullName -line $ln -column 1 -text ($snip + '（超长单行 ' + $line.Length + ' 字符）') -context $fctx2 -doc $doc2 -score $true -activity 'unknown' -invocation 'unknown' -execution $exec2 -confidence 'medium'))
+        # 语境边界：只在真实代码文件（code）或文档内代码块（doc_code）触发；config/doc 正文不触发
+        if ($context -eq 'code' -or $fctx2 -eq 'doc_code') {
+          $doc2 = $false
+          if ($self) { $doc2 = $true }
+          elseif ($fctx2 -eq 'doc_code') { $doc2 = $false }
+          elseif ($fctx2 -in @('comment', 'doc')) { $doc2 = $true }
+          $exec2 = if ($fctx2 -eq 'doc_code') { 'documented' } elseif ($context -eq 'code') { 'executable' } else { 'unknown' }
+          $conf2 = if ($fctx2 -eq 'doc_code') { 'low' } else { 'medium' }
+          $snip = $line
+          if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) + '…' }
+          [void]$findings.Add((New-Finding -id 'OBFUSCATION' -severity 'suspicious' -file $f.FullName -line $ln -column 1 -text ($snip + '（超长单行 ' + $line.Length + ' 字符）') -context $fctx2 -doc $doc2 -score $true -activity 'unknown' -invocation 'unknown' -execution $exec2 -confidence $conf2))
+        }
       }
     }
     foreach ($p in $multiPatterns) {
