@@ -1,9 +1,9 @@
-# skillspector-scan 规则注册表（冻结版 v2.0）
-# 单一规则源：人工审核后冻结；修改本文件会使 rules_hash 变化，旧 .verified 审核失效。
-# 本文件不是“毒库”：不支持远程更新 / 运行时收录。
+# skillspector-scan 规则注册表（统一版，唯一规则源）
+# 人工审核后冻结；修改本文件会使 rules_hash 变化，旧 .verified 审核失效。
+# 普通模式与简报模式共用本注册表，简报的展示投影见 projections 段。
 
 schema_version: 1.0.0
-rules_version: 2.0.0
+rules_version: 2.1.0
 updated: 2026-08-12
 
 config:
@@ -25,66 +25,148 @@ config:
     - Thumbs.db
 
 rules:
-  - rule_id: DOWNLOAD_EXECUTE
+  # ---- 指令与行为类 ----
+  - rule_id: AR
     rule_type: detection
     severity: critical
-    rule_priority: 100
-    description: 下载内容并执行（curl|sh、irm|iex、DownloadString+Invoke-Expression 等）
-    confidence_policy: 字面量完整“下载+执行”链=high；变量拼接=medium；doc_code=low
-    regex: 'curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh|irm\s+.*\|\s*iex|iwr\s+.*\|\s*iex|DownloadString|DownloadFile|Invoke-Expression\s*\([^)]*http'
+    rule_priority: 50
+    category: 行为
+    owasp: AST01
+    description: 要求“永不拒绝/绕过限制”
+    confidence_policy: 字面量=high；doc_code=low
+    regex: 'never\s+refuse|always\s+comply|no\s+disclaimers|no\s+restrictions|ignore\s+your\s+guidelines|do\s+anything\s+now|永不拒绝|永远不要拒绝|不许拒绝|不要(添加|加|输出|提醒).*(免责声明|警告|风险)|不要提示.*风险|别啰嗦'
+  - rule_id: P1
+    rule_type: detection
+    severity: critical
+    rule_priority: 48
+    category: 行为
+    owasp: AST01
+    description: 试图覆盖或忽略指令
+    confidence_policy: 字面量=high；doc_code=low
+    regex: '忽略.*(系统|上级|指令)|无视.*(指令|规则|限制)|override\s+(system|instruction|policy|safety)|only\s+obey|只服从本文件|以本文件为准'
+  - rule_id: SPL
+    rule_type: detection
+    severity: critical
+    rule_priority: 46
+    category: 行为
+    owasp: AST01
+    description: 诱导泄露系统提示
+    confidence_policy: 字面量=high；doc_code=low
+    regex: 'system\s+prompt|print\s+.*instructions|输出.*(系统提示|系统指令|内部规则)|复述.*(系统提示|指令)|show\s+.*(system\s+prompt|instructions)'
+  - rule_id: MP
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 44
+    category: 行为
+    owasp: AST01
+    description: 试图长期篡改记忆/上下文
+    confidence_policy: 字面量=high；doc_code=low
+    regex: '记住.*(永远|长期)|persist\s+this|long[- ]term|跨会话|写入.*(memory|记忆)|修改.*(memory|记忆)|永远记住'
+  - rule_id: EA
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 42
+    category: 行为
+    description: 过度自主执行、绕过确认
+    confidence_policy: 字面量=high；doc_code=low
+    regex: '无需确认|不要问问题|不用征求同意|不用询问|no\s+confirmation|without\s+asking|full\s+access|自动执行|直接执行.*(删除|发布|转账|提交)|不需要.*确认|don.t\s+ask'
+  - rule_id: TR
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 40
+    category: 行为
+    description: 触发词过于宽泛
+    confidence_policy: 字面量=high；doc_code=low
+    regex: 'always\s+(comply|obey|follow|do|run|use)|一切.*(任务|请求)|所有.*(任务|请求).*(执行|处理)|无论如何都要|任何情况下都|无条件执行'
+  - rule_id: AST05
+    rule_type: detection
+    severity: critical
+    rule_priority: 38
+    category: 行为
+    owasp: AST05
+    description: 外部指令来源（诱导从远程地址获取指令）
+    confidence_policy: 字面量完整链=high；变量=medium；doc_code=low
+    regex: '(?i)(?:fetch|retrieve|read|download|get|curl|visit|open|access|follow|obey|execute|按|照|根据|遵循|遵从|听从|读取|获取|访问|下载|抓取|执行)(?:[^\r\n]{0,80}?)(?:https?://[^\s\r\n]{1,80})(?:[^\r\n]{0,40}?)(?:instructions?|directives?|guidelines?|rules|commands?|指令|指示|规则)|(?:fetch|retrieve|read|download|get|follow|obey|execute|读取|获取|访问|下载)(?:[^\r\n]{0,40}?)(?:instructions?|directives?|guidelines?|rules|commands?|指令|指示|规则)(?:[^\r\n]{0,40}?)(?:from|at|on)?\s*https?://[^\s\r\n]{1,80}|https?://[^\s\r\n]{1,80}[^\r\n]{0,40}(?:获取|读取|下载|fetch|read|download|retrieve)[^\r\n]{0,40}(?:指令|指示|规则|instructions?|directives?)|(?:把|将|treat|consider|regard)[^\r\n]{0,30}(?:网页|页面|网站|内容|content|page|website|url|链接|文件)[^\r\n]{0,30}(?:当作|视为|作为|as)[^\r\n]{0,30}(?:指令|指示|规则|instructions?|directives?|guidelines?|rules)'
+
+  # ---- 数据与网络类 ----
+  - rule_id: E1
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 60
+    category: 网络
+    description: 向外部发送数据
+    confidence_policy: 字面量 URL+已调用=high；变量=medium；doc_code=low
+    regex: 'requests\.(post|put|patch)|httpx|aiohttp|fetch\s*\(|Invoke-WebRequest|Invoke-RestMethod|curl\s+.*(-d|--data|-X)|urllib\.(request|parse)|http\.client|WebClient|XMLHttpRequest|axios|\.post\s*\(|\.put\s*\('
+  - rule_id: E1URL
+    rule_type: detection
+    severity: info
+    rule_priority: 58
+    category: 网络
+    description: 外部网络地址（信号）
+    confidence_policy: 仅信号，不计分
+    regex: 'https?://'
+    score: false
+  - rule_id: E2
+    rule_type: detection
+    severity: critical
+    rule_priority: 56
+    category: 凭证
+    description: 读取环境变量/密钥
+    confidence_policy: 环境变量名=high；动态键名=medium；doc_code=low
+    regex: 'os\.environ|process\.env|Get-ChildItem\s+Env:|environ\.get|os\.getenv|getenv\s*\(|Env:\w+|lookupEnv'
+  - rule_id: E3
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 54
+    category: 数据
+    description: 扫描敏感文件/目录
+    confidence_policy: 硬编码路径=high；变量=medium；doc_code=low
+    regex: '\.ssh[\\/]|\.aws[\\/]|credentials(\.json|\.txt|\.ini|\.env)?|os\.walk\s*\(|glob\s*\(.*(home|/Users|/home)'
+  - rule_id: E5
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 52
+    category: 网络
+    description: 上传到云存储
+    confidence_policy: 字面量=high；变量=medium；doc_code=low
+    regex: 'put_object|upload_file|s3\s+cp|gsutil|upload_blob|UploadFromFile|copy_object'
+  - rule_id: SSRF
+    rule_type: detection
+    severity: critical
+    rule_priority: 50
+    category: 网络
+    description: 访问内网或云元数据地址
+    confidence_policy: 字面量=high；变量=medium；doc_code=low
+    regex: '169\.254\.169\.254|metadata\.google|metadata\.compute|instance-data|127\.0\.0\.1|localhost|192\.168\.|10\.\d+\.\d+\.\d+'
+  - rule_id: AS
+    rule_type: detection
+    severity: critical
+    rule_priority: 48
+    category: 数据
+    description: 窥探其他代理配置
+    confidence_policy: 字面量=high；变量=medium；doc_code=low
+    regex: '\.claude[\\/]|\.codex[\\/]|\.gemini[\\/]|mcp\.json|credentials\.json'
   - rule_id: PUBLIC_IP_CALL
     rule_type: detection
     severity: critical
     rule_priority: 95
+    category: 网络
     description: 向公网 IP 发起网络调用（非域名直连 IP）
     confidence_policy: 字面量公网 IP=high；变量拼接=medium；doc_code=low
     regex: '(?<![\d.])(?!10\.)(?!127\.)(?!169\.254\.)(?!192\.168\.)(?!172\.(1[6-9]|2\d|3[01])\.)(?!(0|255)\.)((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])'
-  - rule_id: EXFIL
+  - rule_id: INSECURE_HTTP_CALL
     rule_type: detection
-    severity: critical
-    rule_priority: 90
-    description: 向外部服务器发送数据
-    confidence_policy: 字面量 URL+AST 确认+已调用=high；其余 medium/low；doc_code=low
-    regex: 'requests\.(post|put|patch)|httpx|aiohttp|fetch\s*\(|Invoke-WebRequest|Invoke-RestMethod|curl\s+.*(-d|--data|-X)|urllib\.(request|parse)|http\.client|WebClient|XMLHttpRequest|axios|\.post\s*\(|\.put\s*\('
-  - rule_id: CREDENTIAL_REQUEST
-    rule_type: detection
-    severity: critical
-    rule_priority: 85
-    description: 请求凭证/令牌/API 密钥
-    confidence_policy: 字面量密钥名+已调用=high；动态键名=medium；doc_code=low
-    regex: 'API_KEY|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|api[_-]?key|secret|token|passw(or)?d|credential'
-  - rule_id: SECRET_ENV_READ
-    rule_type: detection
-    severity: critical
-    rule_priority: 80
-    description: 读取敏感环境变量
-    confidence_policy: 环境变量名=high；动态键名=medium；doc_code=low
-    regex: 'os\.environ|process\.env|Get-ChildItem\s+Env:|environ\.get|os\.getenv|getenv\s*\(|Env:\w+|lookupEnv'
-  - rule_id: CREDENTIAL_FILE_ACCESS
-    rule_type: detection
-    severity: critical
-    rule_priority: 75
-    description: 触碰凭证文件（~/.ssh、~/.aws、~/.config 等）
-    confidence_policy: 硬编码路径=high；变量拼接=medium；doc_code=low
-    regex: '\.ssh[\\/]|\.aws[\\/]|credentials(\.json|\.txt|\.ini|\.env)?|\.config[\\/](google-chrome|chromium|microsoft-edge)|netrc'
-  - rule_id: SYSTEM_FILE_MODIFY
-    rule_type: detection
-    severity: critical
-    rule_priority: 70
-    description: 修改工作区外的系统文件
-    confidence_policy: 硬编码目标=high；变量=medium；doc_code=low
-    regex: 'rm\s+-rf|Remove-Item\s+.*-Recurse|-Recurse\s+.*Remove-Item|del\s+/s|rmdir\s+/s|shutil\.rmtree|os\.remove|os\.unlink|os\.rename|os\.replace|shutil\.move'
-  - rule_id: PRIVILEGE_ESCALATION
-    rule_type: detection
-    severity: critical
-    rule_priority: 65
-    description: 请求提升/sudo 权限
-    confidence_policy: 直接调用=high；间接=medium；doc_code=low
-    regex: 'sudo\s|runas\s|--no-sandbox|--insecure|-ExecutionPolicy\s+Bypass|Set-ExecutionPolicy|Bypass\s*=\s*true|requireAdministrator|admin:\s*true|elevat'
+    severity: suspicious
+    rule_priority: 50
+    category: 网络
+    description: 向非 HTTPS 域名发起网络调用
+    confidence_policy: 字面量=medium；变量=low；doc_code=low
+    regex: 'http://(?!localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)'
   - rule_id: BROWSER_SESSION_ACCESS
     rule_type: detection
     severity: critical
     rule_priority: 60
+    category: 凭证
     description: 访问浏览器 Cookie/会话
     confidence_policy: 字面量=high；变量=medium；doc_code=low
     regex: 'document\.cookie|localStorage|sessionStorage|Login\s+Data|Cookies\s+sqlite|cookieStore|cookies\.get|browser\.cookies'
@@ -92,77 +174,295 @@ rules:
     rule_type: detection
     severity: critical
     rule_priority: 55
+    category: 依赖
     description: 安装脚本钩子（preinstall/postinstall、setup.py 执行系统命令）
     confidence_policy: 结构性事实（存在即 high）
     regex: '"preinstall"\s*:|"postinstall"\s*:|"prepare"\s*:.*(&&|\||;)'
-  - rule_id: INSECURE_HTTP_CALL
-    rule_type: detection
-    severity: suspicious
-    rule_priority: 50
-    description: 向非 HTTPS 域名发起网络调用
-    confidence_policy: 字面量=medium；变量=low；doc_code=low
-    regex: 'http://(?!localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)'
-  - rule_id: INTERNAL_NET_CALL
-    rule_type: detection
-    severity: suspicious
-    rule_priority: 45
-    description: 向内网地址发起网络调用（192.168/10/172.16-31）
-    confidence_policy: 字面量=medium；变量=low；doc_code=low
-    regex: '192\.168\.|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.'
-  - rule_id: EVAL_EXEC
-    rule_type: detection
-    severity: suspicious
-    rule_priority: 40
-    description: 代码中存在 eval/exec 调用
-    confidence_policy: AST 确认+已调用=medium；动态/解析失败=low；doc_code=low
-    regex: '\bexec\s*\(|\beval\s*\(|\bcompile\s*\(|__import__\s*\(|os\.system\s*\(|subprocess\s*\.|Popen\s*\(|Invoke-Expression|\bIEX\b|child_process|execSync|new\s+Function\s*\('
-  - rule_id: BASE64_DECODE
-    rule_type: detection
-    severity: suspicious
-    rule_priority: 35
-    description: 使用 base64 解码
-    confidence_policy: AST 确认=medium；文档=low
-    regex: 'b64decode\s*\(|Convert\.FromBase64String|FromBase64\s*\(|atob\s*\(|btoa\s*\('
-  - rule_id: OBFUSCATION
-    rule_type: detection
-    severity: suspicious
-    rule_priority: 30
-    description: 混淆代码（极长单行、大量编码字符）
-    confidence_policy: 超长单行/编码字符比超标=medium；doc_code=low
-    regex: '\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|[\u200b\u200c\u200d\u2060\ufeff\u202e]'
   - rule_id: UNDECLARED_INSTALL
     rule_type: detection
     severity: suspicious
     rule_priority: 25
+    category: 依赖
     description: 未声明安装软件包（代码中执行安装但依赖声明未列出）
     confidence_policy: 安装命令+清单比对=high；仅安装命令=medium
     regex: 'pip\s+install|npm\s+install|yarn\s+add|pnpm\s+add|apt(-get)?\s+install|brew\s+install'
+
+  # ---- 代码与供应链类 ----
+  - rule_id: DC
+    rule_type: detection
+    severity: critical
+    rule_priority: 80
+    category: 执行
+    description: 危险代码调用（执行命令/动态执行）
+    confidence_policy: AST 确认+已调用=high；动态=medium；doc_code=low
+    regex: '\bexec\s*\(|\beval\s*\(|\bcompile\s*\(|__import__\s*\(|os\.system\s*\(|subprocess\s*\.|Popen\s*\(|Invoke-Expression|\bIEX\b|child_process|execSync|new\s+Function\s*\(|System\.Diagnostics\.Process|Start-Process'
+  - rule_id: DC7
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 78
+    category: 执行
+    description: 动态属性访问
+    confidence_policy: 动态调用=medium；doc_code=low
+    regex: 'getattr\s*\([^,]+,\s*(?!\s*[\x22\x27])'
+  - rule_id: SC2
+    rule_type: detection
+    severity: critical
+    rule_priority: 76
+    category: 依赖
+    description: 远程下载并执行
+    confidence_policy: 字面量完整链=high；变量=medium；doc_code=low
+    regex: 'curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh|irm\s+.*\|\s*iex|iwr\s+.*\|\s*iex|DownloadString|DownloadFile|Invoke-Expression\s*\([^)]*http'
+  - rule_id: SC3
+    rule_type: detection
+    severity: critical
+    rule_priority: 74
+    category: 混淆
+    description: 混淆/编码后执行
+    confidence_policy: AST 确认=medium；doc_code=low
+    regex: 'b64decode\s*\(|Convert\.FromBase64String|FromBase64\s*\(|-?enc\s+[A-Za-z0-9+/=]{16,}'
+  - rule_id: RA
+    rule_type: detection
+    severity: critical
+    rule_priority: 72
+    category: 权限
+    description: 持久化/开机自启
+    confidence_policy: 字面量=high；变量=medium；doc_code=low
+    regex: 'crontab\s*(-e)?|schtasks|Startup[\\/]|launchd|systemd|\.bashrc|\.zshrc|\.profile|HKCU:|CurrentVersion[\\/]Run|reg\s+add.*Run|Set-ItemProperty.*Run|New-ScheduledTask'
+  - rule_id: PE
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 70
+    category: 权限
+    description: 提权或绕过限制
+    confidence_policy: 直接调用=high；间接=medium；doc_code=low
+    regex: 'sudo\s|runas\s|--no-sandbox|--insecure|-ExecutionPolicy\s+Bypass|Set-ExecutionPolicy|Bypass\s*=\s*true|requireAdministrator|admin:\s*true|elevat'
+  - rule_id: TM
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 68
+    category: 权限
+    description: 工具参数滥用
+    confidence_policy: 字面量=high；变量=medium；doc_code=low
+    regex: 'shell\s*=\s*True|--force\b|--yes\b|-y\b|privileged:\s*true|hostPath|--no-verify|--unsafe-perm|--allow-root'
+  - rule_id: DEL
+    rule_type: detection
+    severity: critical
+    rule_priority: 66
+    category: 权限
+    description: 删除类危险操作
+    confidence_policy: 硬编码目标=high；变量=medium；doc_code=low
+    regex: 'rm\s+-rf|Remove-Item\s+.*-Recurse|-Recurse\s+.*Remove-Item|del\s+/s|rmdir\s+/s|shutil\.rmtree|os\.remove|os\.unlink|os\.rename|os\.replace|shutil\.move'
+  - rule_id: CRED
+    rule_type: detection
+    severity: critical
+    rule_priority: 64
+    category: 凭证
+    description: 疑似密钥/凭据
+    confidence_policy: 真实凭据格式=high；doc_code=low
+    regex: 'sk-[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN[^-]+PRIVATE\s+KEY-----|xox[baprs]-[A-Za-z0-9\-]{20,}'
+
+  # ---- 已知恶意特征 ----
+  - rule_id: YR1
+    rule_type: detection
+    severity: critical
+    rule_priority: 90
+    category: 恶意
+    description: 恶意特征（反弹shell/木马）
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: 'bash\s+-i|/dev/tcp/|nc\s+-e|ncat\s+-e|socat\s+tcp|reverse\s+shell|meterpreter|webshell|antsword|冰蝎|哥斯拉'
+  - rule_id: YR2
+    rule_type: detection
+    severity: critical
+    rule_priority: 88
+    category: 恶意
+    description: 恶意特征（webshell）
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '<\?php[^\r\n]*(eval|assert|system|shell_exec)\s*\(|eval\s*\(\s*\S*_POST|eval\s*\(\s*\S*_REQUEST|cmd\s+/c|powershell\s+(-enc|-e)\s+[A-Za-z0-9+/=]{8,}'
+  - rule_id: YR3
+    rule_type: detection
+    severity: critical
+    rule_priority: 86
+    category: 恶意
+    description: 恶意特征（挖矿）
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: 'stratum|xmrig|minergate|nicehash|cryptonight'
+  - rule_id: YR4
+    rule_type: detection
+    severity: critical
+    rule_priority: 84
+    category: 恶意
+    description: 恶意特征（攻击工具）
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: 'metasploit|sqlmap|nuclei\s+-t|nikto|hydra\s+-l|masscan|beef-xss'
+  - rule_id: YRM
+    rule_type: detection
+    multi: true
+    severity: critical
+    rule_priority: 82
+    category: 恶意
+    description: 多行恶意特征
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '(?s)bash\s+-i\s+>&?\s*/dev/tcp/'
+  - rule_id: YRM
+    rule_type: detection
+    multi: true
+    severity: critical
+    rule_priority: 82
+    category: 恶意
+    description: 多行恶意特征
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '(?s)(python|perl|ruby)\s+-c\s+[\x22\x27][^\x22\x27]{0,300}(socket|pty|exec|base64)'
+  - rule_id: YRM
+    rule_type: detection
+    multi: true
+    severity: critical
+    rule_priority: 82
+    category: 恶意
+    description: 多行恶意特征
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '(?s)powershell[^\r\n]{0,150}\s+(-enc|-e)\s+[A-Za-z0-9+/=]{20,}'
+  - rule_id: YRM
+    rule_type: detection
+    multi: true
+    severity: critical
+    rule_priority: 82
+    category: 恶意
+    description: 多行恶意特征
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '(?s)curl\s+[^\r\n]{0,200}\s*\|\s*(ba)?sh'
+  - rule_id: YRM
+    rule_type: detection
+    multi: true
+    severity: critical
+    rule_priority: 82
+    category: 恶意
+    description: 多行恶意特征
+    confidence_policy: 特征命中=high；doc_code=low
+    regex: '(?s)wget\s+[^\r\n]{0,200}\s*\|\s*(ba)?sh'
+
+  # ---- 混淆与隐藏内容 ----
+  - rule_id: OBS
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 62
+    category: 混淆
+    description: 混淆内容（base64等）
+    confidence_policy: 存在=medium；doc_code=low
+    regex: 'b64decode\s*\(|atob\s*\(|btoa\s*\(|FromBase64|\\x[0-9a-f]{2}|\\u[0-9a-f]{4}'
+  - rule_id: ZW
+    rule_type: detection
+    severity: suspicious
+    rule_priority: 61
+    category: 混淆
+    description: 隐藏不可见字符
+    confidence_policy: 存在=medium；doc_code=low
+    regex: '[\u200b\u200c\u200d\u2060\ufeff\u202e]'
+
+  # ---- 关联规则（数据驱动） ----
   - rule_id: CREDENTIAL_LOOPBACK_COEXIST
     rule_type: correlation
     severity: suspicious
     rule_priority: 20
+    category: 关联
     description: 同一 Skill 内同时存在凭证读取与回环访问，需人工确认是否相关（共存，非数据流）
     confidence_policy: 两源均为 critical=high；含 doc_code=low
-    sources: [CREDENTIAL_REQUEST, SECRET_ENV_READ, CREDENTIAL_FILE_ACCESS, LOOPBACK_ACCESS]
+    when:
+      all:
+        - category: 凭证
+        - id: LOOPBACK_ACCESS
+    assertion: coexistence
 
 hints:
   - rule_id: LOOPBACK_ACCESS
     severity: reference
     rule_priority: 10
+    category: 网络
     description: 回环地址访问（localhost/127.0.0.1/::1）
     regex: 'localhost|127\.0\.0\.1|127\.0\.0\.0/8|\[::1\]|::1'
   - rule_id: AGENT_MEMORY_FILE
     severity: info
     rule_priority: 8
+    category: 数据
     description: 访问 AI 身份/记忆文件（MEMORY.md、USER.md、SOUL.md、IDENTITY.md）
     regex: 'MEMORY\.md|USER\.md|SOUL\.md|IDENTITY\.md'
   - rule_id: LOCAL_DECLARED_NETWORK
     severity: info
     rule_priority: 6
+    category: 网络
     description: 声明为本地工具但包含网络请求（关键词级弱判断，仅提示）
     regex: '(?i)(本地|离线|local|offline).{0,80}(https?://)'
   - rule_id: DOC_COMMENT
     severity: reference
     rule_priority: 4
+    category: 行为
     description: 文档/注释语境中的命中（归参考发现，不计入风险计数与 TOP3）
     regex: ''
+
+# 简报展示投影：普通规则命中在简报模式下显示为更具体的简报规则
+projections:
+  - rule_id: EXFIL
+    from: E1
+    severity: critical
+    priority: 90
+    category: 网络
+    description: 向外部服务器发送数据
+  - rule_id: SECRET_ENV_READ
+    from: E2
+    severity: critical
+    priority: 80
+    category: 凭证
+    description: 读取敏感环境变量
+  - rule_id: CREDENTIAL_REQUEST
+    from: CRED
+    severity: critical
+    priority: 85
+    category: 凭证
+    description: 请求凭证/令牌/API 密钥
+  - rule_id: CREDENTIAL_FILE_ACCESS
+    from: E3
+    severity: critical
+    priority: 75
+    category: 凭证
+    description: 触碰凭证文件（~/.ssh、~/.aws、~/.config 等）
+  - rule_id: SYSTEM_FILE_MODIFY
+    from: DEL
+    severity: critical
+    priority: 70
+    category: 权限
+    description: 修改工作区外的系统文件
+  - rule_id: PRIVILEGE_ESCALATION
+    from: PE
+    severity: critical
+    priority: 65
+    category: 权限
+    description: 请求提升/sudo 权限
+  - rule_id: EVAL_EXEC
+    from: DC
+    severity: suspicious
+    priority: 40
+    category: 执行
+    description: 代码中存在 eval/exec 调用
+  - rule_id: BASE64_DECODE
+    from: SC3
+    severity: suspicious
+    priority: 35
+    category: 混淆
+    description: 使用 base64 解码
+  - rule_id: OBFUSCATION
+    from: ZW
+    severity: suspicious
+    priority: 30
+    category: 混淆
+    description: 混淆代码（极长单行、大量编码字符）
+  - rule_id: INTERNAL_NET_CALL
+    from: SSRF
+    severity: suspicious
+    priority: 45
+    category: 网络
+    description: 向内网地址发起网络调用（192.168/10/172.16-31）
+  - rule_id: DOWNLOAD_EXECUTE
+    from: SC2
+    severity: critical
+    priority: 100
+    category: 执行
+    description: 下载内容并执行（curl|sh、irm|iex、DownloadString+Invoke-Expression 等）

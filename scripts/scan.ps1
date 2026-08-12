@@ -339,7 +339,7 @@ function ConvertFrom-SimpleYaml {
 }
 
 function Get-RegistryRules {
-  # 加载规则注册表（rules/rules.yaml）；失败时简报模式不可用但普通模式不受影响
+  # 加载规则注册表（rules/rules.yaml，唯一规则源）；由注册表生成统一规则集（普通+简报共用）
   $path = Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\rules.yaml'
   if (-not (Test-Path -LiteralPath $path)) { return $false }
   try {
@@ -348,9 +348,54 @@ function Get-RegistryRules {
     $script:registry = @{
       rules = @($o.rules)
       hints = @($o.hints)
+      projections = @($o.projections)
       config = $o.config
       rules_version = [string]$o.rules_version
       schema_version = [string]$o.schema_version
+    }
+    # severity 归一：注册表新四类 → 普通模式内部旧值（简报渲染时再投影回新四类）
+    $sevMap = @{ critical = 'HIGH'; suspicious = 'MEDIUM'; info = 'LOW' }
+    $lp = New-Object System.Collections.ArrayList
+    $mp = New-Object System.Collections.ArrayList
+    $hp = New-Object System.Collections.ArrayList
+    $script:descMap = @{}
+    $script:owaspMap = @{}
+    $script:ruleCategory = @{}
+    $script:rulePriority = @{}
+    foreach ($r in @($o.rules)) {
+      if (-not $r.regex) { continue }
+      $isMulti = ("$($r.multi)" -eq 'true')
+      $sev = if ($sevMap.ContainsKey([string]$r.severity)) { $sevMap[[string]$r.severity] } else { [string]$r.severity }
+      $scoreVal = $true
+      if ($null -ne $r.score) { $scoreVal = -not ("$($r.score)" -eq 'false') }
+      $item = [pscustomobject]@{ id = $r.rule_id; sev = $sev; re = $r.regex; multi = $isMulti; score = $scoreVal }
+      if ($isMulti) { [void]$mp.Add($item) } else { [void]$lp.Add($item) }
+      if ($r.description) { $script:descMap[$r.rule_id] = [string]$r.description }
+      if ($r.owasp) { $script:owaspMap[$r.rule_id] = [string]$r.owasp }
+      if ($r.category) { $script:ruleCategory[$r.rule_id] = [string]$r.category }
+      $script:rulePriority[$r.rule_id] = if ($null -ne $r.rule_priority) { [int]$r.rule_priority } else { 0 }
+    }
+    foreach ($h in @($o.hints)) {
+      if (-not $h.regex) { continue }
+      [void]$hp.Add([pscustomobject]@{ id = $h.rule_id; sev = [string]$h.severity; re = $h.regex; multi = $false; score = $false })
+      if ($h.description) { $script:descMap[$h.rule_id] = [string]$h.description }
+      if ($h.category) { $script:ruleCategory[$h.rule_id] = [string]$h.category }
+      $script:rulePriority[$h.rule_id] = if ($null -ne $h.rule_priority) { [int]$h.rule_priority } else { 0 }
+    }
+    $script:linePatterns = @($lp)
+    $script:multiPatterns = @($mp)
+    $script:hintPatterns = @($hp)
+    # 简报展示投影：普通规则命中在简报模式下显示为更具体的简报规则
+    $script:briefProjections = @{}
+    $script:briefProjectionFrom = @{}
+    foreach ($pj in @($o.projections)) {
+      $pjObj = [pscustomobject]@{
+        brief_id = [string]$pj.rule_id; severity = [string]$pj.severity
+        priority = if ($null -ne $pj.priority) { [int]$pj.priority } else { 0 }
+        category = [string]$pj.category; description = [string]$pj.description
+      }
+      $script:briefProjections[$pj.rule_id] = $pjObj
+      $script:briefProjectionFrom[[string]$pj.from] = $pjObj
     }
     $script:registryLoaded = $true
     return $true
@@ -1161,26 +1206,9 @@ function Invoke-ScanPath {
   }
   foreach ($de in $permErrs) { [void]$errors.Remove($de) }
 
-  # 简报模式：加载注册表规则（detection + hints）
-  $scanRuleList = $null
-  if ($briefMode) {
-    if (-not $registryLoaded) { [void](Get-RegistryRules) }
-    if ($registryLoaded) {
-      $scanRuleList = New-Object System.Collections.ArrayList
-      foreach ($r in @($registry.rules)) {
-        if ($r.rule_type -eq 'detection' -and $r.regex) {
-          [void]$scanRuleList.Add([pscustomobject]@{ id = $r.rule_id; sev = $r.severity; re = $r.regex; score = $true; priority = [int]$r.rule_priority })
-        }
-      }
-      foreach ($h in @($registry.hints)) {
-        if ($h.regex) {
-          [void]$scanRuleList.Add([pscustomobject]@{ id = $h.rule_id; sev = $h.severity; re = $h.regex; score = $false; priority = [int]$h.rule_priority })
-        }
-      }
-    } else {
-      [void]$errors.Add('规则注册表不可用，简报模式退化为普通规则扫描')
-    }
-  }
+  # 统一规则集：注册表加载后 linePatterns/multiPatterns/hintPatterns 已生成（普通+简报共用）
+  if ($briefMode -and -not $registryLoaded) { [void](Get-RegistryRules) }
+  if ($briefMode -and -not $registryLoaded) { [void]$errors.Add('规则注册表不可用，简报模式退化为内置规则扫描') }
   $obfLen = 2000
   if ($briefMode -and $registry.config -and $registry.config.obfuscation_line_length) {
     try { $obfLen = [int]$registry.config.obfuscation_line_length } catch {}
@@ -1267,7 +1295,7 @@ function Invoke-ScanPath {
     if ($briefMode -and $commentMap.ContainsKey($f.FullName)) {
       foreach ($n in @($commentMap[$f.FullName].comment_lines)) { $commentLines[[int]$n] = $true }
     }
-    $rules = if ($briefMode -and $scanRuleList) { $scanRuleList } else { $linePatterns }
+    $rules = if ($briefMode) { @($linePatterns) + @($hintPatterns) } else { $linePatterns }
     for ($li = 0; $li -lt $lines.Count; $li++) {
       $line = $lines[$li]
       $ln = $li + 1
@@ -1426,6 +1454,13 @@ function Invoke-ScanPath {
   $result.severity = $sev
   $result.recommendation = $rec
   $result.hasExecutable = $hasExec
+  if ($briefMode) {
+    foreach ($fd in $findings) {
+      if (-not ($fd.PSObject.Properties['brief_id'])) {
+        $fd | Add-Member -NotePropertyName brief_id -NotePropertyValue (Get-BriefView $fd).brief_id -Force
+      }
+    }
+  }
   $result.findings = @($findings)
   $result.suppressed = @($suppressed)
   $result.skipped = @($skipped)
@@ -1505,8 +1540,7 @@ function Get-CorrelationFindings {
   # 受限共存关联：凭证类 risk finding 与回环 reference finding 同技能并存 → 新 finding（不推断数据流）
   param($findings)
   $out = New-Object System.Collections.ArrayList
-  $credIds = @('CREDENTIAL_REQUEST', 'SECRET_ENV_READ', 'CREDENTIAL_FILE_ACCESS')
-  $cred = @($findings | Where-Object { $_.id -in $credIds -and -not $_.doc })
+  $cred = @($findings | Where-Object { -not $_.doc -and ((Get-BriefView $_).brief_id -in @('CREDENTIAL_REQUEST', 'SECRET_ENV_READ', 'CREDENTIAL_FILE_ACCESS')) })
   $loop = @($findings | Where-Object { $_.id -eq 'LOOPBACK_ACCESS' })
   if ($cred.Count -gt 0 -and $loop.Count -gt 0) {
     $conf = 'high'
@@ -1525,14 +1559,12 @@ function Get-CorrelationFindings {
 function Get-BehaviorSummary {
   # 确定性聚合：命中规则 → category → 去重 → 最多 5 个
   param($findings)
-  $catMap = @{
-    DOWNLOAD_EXECUTE = '执行'; PUBLIC_IP_CALL = '网络'; EXFIL = '网络'; CREDENTIAL_REQUEST = '凭证';
-    SECRET_ENV_READ = '凭证'; CREDENTIAL_FILE_ACCESS = '凭证'; SYSTEM_FILE_MODIFY = '权限';
-    PRIVILEGE_ESCALATION = '权限'; BROWSER_SESSION_ACCESS = '凭证'; INSTALL_HOOK = '依赖';
-    INSECURE_HTTP_CALL = '网络'; INTERNAL_NET_CALL = '网络'; EVAL_EXEC = '执行'; BASE64_DECODE = '混淆';
-    OBFUSCATION = '混淆'; UNDECLARED_INSTALL = '依赖'
-  }
-  $cats = @($findings | Where-Object { -not $_.doc -and $catMap.ContainsKey($_.id) } | ForEach-Object { $catMap[$_.id] } | Select-Object -Unique)
+  $cats = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' } | ForEach-Object {
+    $v = Get-BriefView $_
+    if ($v.projected) { $v.category }
+    elseif ($ruleCategory.ContainsKey($_.id)) { $ruleCategory[$_.id] }
+    else { $null }
+  } | Where-Object { $_ } | Select-Object -Unique)
   if ($cats.Count -gt 5) { $cats = @($cats[0..4]) }
   return @($cats)
 }
@@ -1545,16 +1577,14 @@ function Get-BriefTop3 {
   $actRank = @{ active = 4; mixed = 3; passive = 2; unknown = 1 }
   $invRank = @{ called = 5; framework_entry = 4; dynamic = 3; unknown = 2; not_called = 1 }
   $execRank = @{ executable = 3; unknown = 2; documented = 1 }
-  $priority = @{}
-  foreach ($r in @($registry.rules) + @($registry.hints)) { $priority[$r.rule_id] = [int]$r.rule_priority }
   $cands = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' })
   $sorted = @($cands | Sort-Object -Property `
-    @{ Expression = { $sevRank[(Get-BriefSeverity $_.severity)] }; Descending = $true }, `
+    @{ Expression = { $sevRank[(Get-BriefSeverity (Get-BriefView $_).severity)] }; Descending = $true }, `
     @{ Expression = { $confRank[$_.confidence] }; Descending = $true }, `
     @{ Expression = { $actRank[$_.activity] }; Descending = $true }, `
     @{ Expression = { $invRank[$_.invocation] }; Descending = $true }, `
     @{ Expression = { $execRank[$_.execution] }; Descending = $true }, `
-    @{ Expression = { if ($priority.ContainsKey($_.id)) { $priority[$_.id] } else { 0 } }; Descending = $true }, `
+    @{ Expression = { $v = Get-BriefView $_; if ($v.projected) { $v.priority } elseif ($rulePriority.ContainsKey($_.id)) { $rulePriority[$_.id] } else { 0 } }; Descending = $true }, `
     file, column, line, finding_id)
   return @($sorted | Select-Object -First 3)
 }
@@ -1817,9 +1847,9 @@ function Get-VerificationText {
 function Get-BriefRiskSummary {
   param($r)
   $risk = @($r.findings | Where-Object { -not $_.doc })
-  $crit = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'critical' }).Count
-  $susp = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'suspicious' }).Count
-  $info = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'info' }).Count
+  $crit = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'critical' }).Count
+  $susp = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'suspicious' }).Count
+  $info = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'info' }).Count
   $ref = @($r.reference_findings).Count
   return ('🔴 ' + $crit + ' 严重 / 🟡 ' + $susp + ' 可疑 / 💡 ' + $info + ' 提示 / 📄 ' + $ref + ' 参考')
 }
@@ -1884,6 +1914,16 @@ function Get-BriefSeverity {
   }
 }
 
+function Get-BriefView {
+  # 简报投影视图：普通规则命中 → 简报规则 id/severity/desc/priority/category
+  param($f)
+  if ($script:briefProjectionFrom -and $script:briefProjectionFrom.ContainsKey($f.id)) {
+    $p = $script:briefProjectionFrom[$f.id]
+    return [pscustomobject]@{ id = $f.id; brief_id = $p.brief_id; severity = $p.severity; desc = $p.description; priority = $p.priority; category = $p.category; projected = $true }
+  }
+  return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false }
+}
+
 function Get-BriefMarks {
   param($f)
   $mark = if ($f.activity -eq 'active') { '【主动】' } elseif ($f.activity -eq 'passive') { '【被动】' } elseif ($f.activity -eq 'mixed') { '【混合】' } else { '【未知】' }
@@ -1905,8 +1945,10 @@ function Render-BriefOne {
   if (@($r.top3).Count -eq 0) { [void]$lines.Add('  （无）') }
   else {
     foreach ($f in @($r.top3)) {
-      $inf = Get-InferenceText $f.id
-      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6} → {7}' -f (Get-BriefSeverity $f.severity), $f.id, (Get-RuleDesc $f.id), $f.file, $f.line, (Get-BriefMarks $f), $f.confidence, $inf))
+      $v = Get-BriefView $f
+      $d = if ($v.projected) { $v.desc } else { Get-RuleDesc $f.id }
+      $inf = Get-InferenceText $v.brief_id
+      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6} → {7}' -f (Get-BriefSeverity $v.severity), $v.brief_id, $d, $f.file, $f.line, (Get-BriefMarks $f), $f.confidence, $inf))
       [void]$lines.Add(('    证据: ' + $f.text))
     }
   }
@@ -1925,8 +1967,10 @@ function Render-BriefOne {
   if ($risk.Count -eq 0) { [void]$lines.Add('  （无）') }
   else {
     foreach ($f in $risk) {
-      $inf = Get-InferenceText $f.id
-      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6}' -f (Get-BriefSeverity $f.severity), $f.id, (Get-RuleDesc $f.id), $f.file, $f.line, (Get-BriefMarks $f), $f.confidence))
+      $v = Get-BriefView $f
+      $d = if ($v.projected) { $v.desc } else { Get-RuleDesc $f.id }
+      $inf = Get-InferenceText $v.brief_id
+      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6}' -f (Get-BriefSeverity $v.severity), $v.brief_id, $d, $f.file, $f.line, (Get-BriefMarks $f), $f.confidence))
       [void]$lines.Add(('    事实: ' + $f.text))
       if ($inf) { [void]$lines.Add(('    推断: ' + $inf)) }
     }
@@ -1935,7 +1979,8 @@ function Render-BriefOne {
   if (@($r.reference_findings).Count -eq 0) { [void]$lines.Add('  （无）') }
   else {
     foreach ($f in @($r.reference_findings | Select-Object -First 20)) {
-      [void]$lines.Add(('  • [{0}] {1} {2}:{3} [{4}] {5}' -f (Get-BriefSeverity $f.severity), $f.id, $f.file, $f.line, $f.context, $f.text))
+      $v = Get-BriefView $f
+      [void]$lines.Add(('  • [{0}] {1} {2}:{3} [{4}] {5}' -f (Get-BriefSeverity $v.severity), $v.brief_id, $f.file, $f.line, $f.context, $f.text))
     }
   }
   [void]$lines.Add('▸ 依赖与文件发现:')

