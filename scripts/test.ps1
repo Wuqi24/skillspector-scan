@@ -332,6 +332,39 @@ print(os.getenv("T"))
   if ($t.analysis_status -ne 'partial' -or $skipReason.Count -lt 1) {
     Write-Host ("FAIL unsupported_encoding: status=" + $t.analysis_status + " skipped=" + @($t.skipped).Count); $fail++
   } else { Write-Host 'OK unsupported_encoding（跳过并标 partial）' }
+
+  # 23) binary_asset 不计 partial：已知资产跳过不阻碍 complete 与 -MarkVerified
+  $as = Join-Path $tmp ('asset-skill-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $as | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $as 'SKILL.md') -Value "---`nname: asset-skill`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllBytes((Join-Path $as 'logo.png'), [byte[]](0x89, 0x50, 0x4E, 0x47))
+  $r = Invoke-BriefJson $as
+  $t = $r.Target
+  $assetSkip = @($t.skipped | Where-Object { $_.reason -eq 'binary_asset' })
+  $prevEap2 = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $as 2>$null
+  $mkCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap2
+  $vp2 = @(Get-ChildItem -LiteralPath $vd -Filter ((Split-Path $as -Leaf) + '@*.json') -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)
+  if ($vp2) { Remove-Item -LiteralPath $vp2 -Force -ErrorAction SilentlyContinue }
+  if ($t.analysis_status -ne 'complete' -or $assetSkip.Count -lt 1 -or $mkCode -ne 0) {
+    Write-Host ("FAIL binary_asset: status=" + $t.analysis_status + " assetSkip=" + $assetSkip.Count + " mkCode=" + $mkCode); $fail++
+  } else { Write-Host 'OK binary_asset（跳过不计 partial，可 MarkVerified）' }
+
+  # 24) 内容嗅探：未知扩展名含 NUL → binary + partial；UTF-16 BOM 文本不误判
+  $sn = Join-Path $tmp 'sniff-skill'
+  New-Item -ItemType Directory -Force -Path $sn | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $sn 'SKILL.md') -Value "---`nname: sniff-skill`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllBytes((Join-Path $sn 'blob.foo'), [byte[]](0x00, 0x01, 0x02, 0x03))
+  [System.IO.File]::WriteAllText((Join-Path $sn 'u16.txt'), '# utf16 ok', [System.Text.Encoding]::Unicode)
+  $r = Invoke-BriefJson $sn
+  $t = $r.Target
+  $binSkip = @($t.skipped | Where-Object { $_.reason -eq 'binary' })
+  $u16Skip = @($t.skipped | Where-Object { $_.file -like '*u16.txt' })
+  if ($t.analysis_status -ne 'partial' -or $binSkip.Count -lt 1 -or $u16Skip.Count -gt 0) {
+    Write-Host ("FAIL 内容嗅探: status=" + $t.analysis_status + " binSkip=" + $binSkip.Count + " u16Skip=" + $u16Skip.Count); $fail++
+  } else { Write-Host 'OK 内容嗅探（NUL→binary+partial，UTF-16 不误判）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

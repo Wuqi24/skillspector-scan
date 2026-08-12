@@ -99,14 +99,19 @@ $scriptPath = $MyInvocation.MyCommand.Path
 if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'scan.ps1' }
 $sevPoints = @{ CRITICAL = 50; HIGH = 25; MEDIUM = 10; MED = 10; LOW = 5 }
 
-$skipExt = @(
-  '.png','.jpg','.jpeg','.gif','.webp','.ico','.jar','.zip','.7z','.rar',
-  '.exe','.dll','.bin','.dat','.iso','.o','.so','.dylib',
+# 已知无害静态资产（binary_asset：跳过但不影响覆盖完整性，不计 partial）
+$assetExt = @(
+  '.png','.jpg','.jpeg','.gif','.webp','.ico',
   '.ogg','.mp3','.mp4','.wav','.avi','.mov',
-  '.ttf','.woff','.woff2','.otf','.eot',
+  '.ttf','.woff','.woff2','.otf','.eot'
+)
+# 无法确认无害的二进制（binary：影响覆盖完整性 → partial）
+$binaryExt = @(
+  '.jar','.zip','.7z','.rar','.exe','.dll','.bin','.dat','.iso','.o','.so','.dylib',
   '.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx',
   '.pyc','.pyo','.whl','.deb','.rpm','.apk'
 )
+$skipExt = @($assetExt) + @($binaryExt)
 
 # 行级模式：id / severity / regex。score=$false 表示仅作信号、不计分（如 E1URL）
 $linePatterns = @(
@@ -459,6 +464,23 @@ function Read-TextFile {
   }
   $text = $text -replace "`r`n", "`n" -replace "`r", "`n"
   return [pscustomobject]@{ Text = $text; Encoding = $enc; Truncated = $truncated; Status = 'ok' }
+}
+
+function Test-BinaryContent {
+  # 内容嗅探：扩展名无法分类时的二进制判定（含 NUL 字节 → 二进制；UTF-16 BOM 不误判）
+  param([string]$path)
+  try {
+    $fs = [System.IO.File]::OpenRead($path)
+    try {
+      $len = [Math]::Min([long]$fs.Length, 8192)
+      if ($len -eq 0) { return $false }
+      $buf = New-Object byte[] $len
+      $read = $fs.Read($buf, 0, $len)
+      if ($read -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) { return $false }
+      for ($i = 0; $i -lt $read; $i++) { if ($buf[$i] -eq 0) { return $true } }
+      return $false
+    } finally { $fs.Dispose() }
+  } catch { return $false }
 }
 
 function Get-ContextForFile {
@@ -1121,8 +1143,9 @@ function Invoke-ScanPath {
   # 目录枚举失败（无权限等）按 permission_denied 记录到跳过清单
   $permErrs = @($errors | Where-Object { $_.PSObject.Properties['reason'] -and $_.reason -eq 'permission_denied' })
   foreach ($de in $permErrs) {
-    [void]$skipped.Add([pscustomobject]@{ file = $de.path; reason = 'permission_denied' })
+    [void]$skipped.Add([pscustomobject]@{ file = $de.path; reason = 'permission_denied'; desc = '目录不可读（权限）' })
     $skipReasons[$de.path] = 'permission_denied'
+    $fileStatus[$de.path] = 'partial'
   }
   foreach ($de in $permErrs) { [void]$errors.Remove($de) }
 
@@ -1152,14 +1175,29 @@ function Invoke-ScanPath {
   foreach ($f in $allFiles) {
     if ($f.Name -like '.skillspector-baseline*' -or $f.Name -in @('.DS_Store', 'Thumbs.db')) { continue }
     if ($f.FullName -match '\\\.git\\') { continue }
-    if ($skipExt -contains $f.Extension.ToLower()) {
-      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary' })
+    $ext = $f.Extension.ToLower()
+    if ($assetExt -contains $ext) {
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary_asset'; desc = '已知静态资产（图片/字体/媒体）' })
+      $skipReasons[$f.FullName] = 'binary_asset'
+      $fileStatus[$f.FullName] = 'skipped'
+      continue
+    }
+    if ($binaryExt -contains $ext) {
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary'; desc = '二进制文件（无法文本分析）' })
       $skipReasons[$f.FullName] = 'binary'
+      $fileStatus[$f.FullName] = 'partial'
       continue
     }
     if ($f.Length -gt $MaxFileBytes) {
-      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'oversized' })
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'oversized'; desc = ('超过单文件分析上限 ' + [Math]::Round($MaxFileBytes / 1MB, 1) + 'MB') })
       $skipReasons[$f.FullName] = 'oversized'
+      $fileStatus[$f.FullName] = 'partial'
+      continue
+    }
+    if (Test-BinaryContent $f.FullName) {
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary'; desc = '二进制内容（无法文本分析）' })
+      $skipReasons[$f.FullName] = 'binary'
+      $fileStatus[$f.FullName] = 'partial'
       continue
     }
     [void]$scanFiles.Add($f)
@@ -1197,8 +1235,9 @@ function Invoke-ScanPath {
     }
     if ($content.Status -ne 'ok') {
       $skipReasons[$f.FullName] = $content.Status
-      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = $content.Status })
-      $fileStatus[$f.FullName] = 'skipped'
+      $sd = if ($content.Status -eq 'unsupported_encoding') { '编码无法识别（所有回退失败）' } else { '文件不可读（权限/占用）' }
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = $content.Status; desc = $sd })
+      $fileStatus[$f.FullName] = 'partial'
       continue
     }
     $fileStatus[$f.FullName] = 'complete'
@@ -1357,7 +1396,7 @@ function Invoke-ScanPath {
   $result.errors = @($errors)
   $result.scan_files = @($scanFiles | Select-Object -ExpandProperty FullName)
   $result.skip_reasons = $skipReasons
-  $result.analysis_status = if (@($fileStatus.Values | Where-Object { $_ -eq 'failed' }).Count -gt 0) { 'failed' } elseif ($skipped.Count -gt 0 -or @($fileStatus.Values | Where-Object { $_ -eq 'partial' }).Count -gt 0) { 'partial' } else { 'complete' }
+  $result.analysis_status = if (@($fileStatus.Values | Where-Object { $_ -eq 'failed' }).Count -gt 0) { 'failed' } elseif (@($fileStatus.Values | Where-Object { $_ -eq 'partial' }).Count -gt 0) { 'partial' } else { 'complete' }
   $result.rules = [pscustomobject]@{ version = $registry.rules_version; schema = $registry.schema_version; scanner = $scannerVersion }
   if ($briefMode) {
     $result.reference_findings = @($findings | Where-Object { $_.doc })
@@ -1985,7 +2024,10 @@ foreach ($r in $reports) {
       $ow = if ($f.owasp) { ' [OWASP ' + $f.owasp + ']' } else { '' }
       [void]$outLines.Add(('[{0}] {1} {2} {3}:{4} {5} {6}{7}' -f $f.id, $f.severity, $fd, $f.file, $f.line, $tag, $f.text, $ow))
     }
-    foreach ($s in $r.skipped) { [void]$outLines.Add(('[SKIP] ' + $s.file + ': ' + $s.reason)) }
+    foreach ($s in $r.skipped) {
+      $sd = if ($s.desc) { $s.desc } else { $s.reason }
+      [void]$outLines.Add(('[SKIP] ' + $s.file + ': ' + $sd))
+    }
     foreach ($e in $r.errors) { [void]$outLines.Add(('[ERR] ' + $e)) }
     [void]$outLines.Add(('==== 小结: score={0} / {1}（{2}）| 有效 {3} | 文档语境 {4} | 基线抑制 {5} | 跳过 {6} | 错误 {7} ====' -f `
       $r.score, $r.severity, $r.recommendation, $eff.Count, $docCount, $suppCount, $r.skipped.Count, $r.errors.Count))
