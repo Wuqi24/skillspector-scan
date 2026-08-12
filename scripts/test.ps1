@@ -450,6 +450,20 @@ print(os.getenv("T"))
   if ($obfConfig.Count -gt 0 -or $obfDoc.Count -lt 1 -or $obfDoc[0].confidence -ne 'low') {
     Write-Host ("FAIL OBFUSCATION 语境边界: configHit=" + $obfConfig.Count + " docHit=" + $obfDoc.Count + " conf=" + $obfDoc[0].confidence); $fail++
   } else { Write-Host 'OK OBFUSCATION 语境边界（config 不触发，doc_code 触发且 low）' }
+
+  # 31) 地址分类器：IPv6 统一分类（::1→LOOPBACK，fe80::→INTERNAL，公网 IPv6→PUBLIC）
+  $ip6 = Join-Path $tmp 'ip6-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $ip6 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ip6 'SKILL.md') -Value "---`nname: ip6-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ip6 'scripts\n.py') -Value "import requests`nrequests.get('http://[::1]:8080')`nrequests.get('http://[fe80::1]/x')`nrequests.get('http://[2001:db8:0:0:0:0:0:1]/y')"
+  $r = Invoke-BriefJson $ip6
+  $t = $r.Target
+  $loop6 = @($t.findings | Where-Object { $_.id -eq 'LOOPBACK_ACCESS' -and $_.text -like '*::1*' })
+  $int6 = @($t.findings | Where-Object { $_.id -eq 'INTERNAL_NET_CALL' -and $_.text -like '*fe80*' })
+  $pub6 = @($t.findings | Where-Object { $_.id -eq 'PUBLIC_IP_CALL' -and $_.text -like '*2001:db8*' })
+  if ($loop6.Count -lt 1 -or $int6.Count -lt 1 -or $pub6.Count -lt 1) {
+    Write-Host ("FAIL IPv6 分类: loop=" + $loop6.Count + " int=" + $int6.Count + " pub=" + $pub6.Count); $fail++
+  } else { Write-Host 'OK 地址分类器（IPv6 loopback/私网/公网）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

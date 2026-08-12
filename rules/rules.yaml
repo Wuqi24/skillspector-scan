@@ -366,10 +366,9 @@ rules:
     category: 关联
     description: 同一 Skill 内同时存在凭证读取与回环访问，需人工确认是否相关（共存，非数据流）
     confidence_policy: 两源均为 critical=high；含 doc_code=low
-    when:
-      all:
-        - category: 凭证
-        - id: LOOPBACK_ACCESS
+    when_all:
+      - 'category:凭证'
+      - 'id:LOOPBACK_ACCESS'
     assertion: coexistence
 
 hints:
