@@ -430,6 +430,7 @@ function Get-RegistryHashes {
     config_hash = $configHash
     known_packages_hash = $kpHash
     known_packages_version = $kpVersion
+    schema_hash = Get-Sha256Hex $registry.schema_version
   }
 }
 
@@ -1831,7 +1832,7 @@ function Get-VerificationStatus {
     $curFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $man.files)
     $oldFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $v.files)
     $sameFiles = ($curFiles -eq $oldFiles)
-    $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version)
+    $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version) -and ($v.schema_hash -eq $hashes.schema_hash)
     if ($sameFiles -and $sameEnv) { return [pscustomobject]@{ status = 'valid'; decision = $v.decision; date = $v.verified_at } }
     if ($sameFiles -and -not $sameEnv) { return [pscustomobject]@{ status = 'stale_env'; decision = $v.decision; date = $v.verified_at } }
     return [pscustomobject]@{ status = 'stale_content'; decision = $v.decision; date = $v.verified_at }
@@ -1862,6 +1863,7 @@ function Invoke-MarkVerified {
     known_packages_version = $hashes.known_packages_version
     known_packages_hash = $hashes.known_packages_hash
     schema_version = $registry.schema_version
+    schema_hash = $hashes.schema_hash
   }
   $record = [ordered]@{
     decision = $decision
@@ -1874,6 +1876,7 @@ function Invoke-MarkVerified {
     known_packages_version = $hashes.known_packages_version
     known_packages_hash = $hashes.known_packages_hash
     schema_version = $registry.schema_version
+    schema_hash = $hashes.schema_hash
     report_fingerprint = (Get-Sha256Hex (ConvertTo-CanonicalJson $fpInput))
     target_identity = $ti.identity
     analysis_status = 'complete'
