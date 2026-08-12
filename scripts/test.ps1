@@ -505,6 +505,22 @@ print(os.getenv("T"))
   if ($md.Count -lt 1 -or $mdBad.Count -gt 0 -or $ip192.Count -lt 1 -or $ip192Bad.Count -gt 0 -or $cls192.Count -lt 1 -or $mdIp.Count -lt 1 -or $mdIpDup.Count -gt 0 -or $otherLl.Count -lt 1 -or $ssrfNormal.Count -lt 3) {
     Write-Host ("FAIL SSRF/Brief: md=$($md.Count) mdBad=$($mdBad.Count) ip192=$($ip192.Count) ip192Bad=$($ip192Bad.Count) cls192=$($cls192.Count) mdIp=$($mdIp.Count) mdIpDup=$($mdIpDup.Count) otherLl=$($otherLl.Count) normalSSRF=$($ssrfNormal.Count)"); $fail++
   } else { Write-Host 'OK SSRF/Brief（metadata critical、内网 IP 不重复投影、169.254.169.254 去重、普通模式保留）' }
+
+  # 34) localhost 回环域名：Brief 只保留 LOOPBACK_ACCESS，SSRF 投影不产生重复 INTERNAL_NET_CALL；大小写/端口/私网/普通域名不回归
+  $lh = Join-Path $tmp 'lh-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $lh 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $lh 'SKILL.md') -Value "---`nname: lh-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $lh 'scripts\r.py') -Value "import requests`nrequests.get('http://localhost:8080/x')`nrequests.get('http://LOCALHOST:3000/x')`nrequests.get('https://localhost:8443/x')`nrequests.get('http://192.168.1.5/x')`nrequests.get('http://example.com/x')"
+  $r = Invoke-BriefJson $lh
+  $t = $r.Target
+  $lhSsrf = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*localhost*' })
+  $lhInternal = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*localhost*' -and $_.brief_id -eq 'INTERNAL_NET_CALL' })
+  $lhLoop = @($t.findings | Where-Object { $_.id -eq 'LOOPBACK_ACCESS' })
+  $ipInt = @($t.findings | Where-Object { $_.id -eq 'INTERNAL_NET_CALL' -and $_.text -like '*192.168.1.5*' })
+  $exLoop = @($t.findings | Where-Object { $_.id -eq 'LOOPBACK_ACCESS' -and $_.text -like '*example.com*' })
+  if ($lhSsrf.Count -lt 1 -or $lhInternal.Count -gt 0 -or $lhLoop.Count -lt 1 -or $ipInt.Count -lt 1 -or $exLoop.Count -gt 0) {
+    Write-Host ("FAIL localhost/Brief: lhSsrf=$($lhSsrf.Count) lhInternal=$($lhInternal.Count) lhLoop=$($lhLoop.Count) ipInt=$($ipInt.Count) exLoop=$($exLoop.Count)"); $fail++
+  } else { Write-Host 'OK localhost/Brief（LOOPBACK 保留、无重复 INTERNAL、私网/普通域名不回归）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

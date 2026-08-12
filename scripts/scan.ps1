@@ -1979,6 +1979,10 @@ function Get-BriefView {
     if ($f.text -match 'metadata\.|instance-data|169\.254\.169\.254') {
       return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false; hide = $false }
     }
+    if ($f.text -match '(?i)localhost') {
+      # localhost 是回环域名：LOOPBACK_ACCESS 语义更精确，隐藏该 SSRF 的 INTERNAL_NET_CALL 投影（canonical SSRF 保留）
+      return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false; hide = $true }
+    }
     foreach ($ip in @(Get-IpCandidates $f.text)) {
       $cls = Get-AddressClass $ip
       if ($cls -in @('private', 'loopback')) {
