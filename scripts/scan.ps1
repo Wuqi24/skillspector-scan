@@ -455,7 +455,7 @@ function Get-Targets {
     $root = Get-SkillsRoot
     if (-not $root) { throw '无法定位 skills 根目录，请改用 -Path 指定' }
     $list = @(Get-ChildItem -Directory -Force -LiteralPath $root |
-      Where-Object { $_.Name -ne '.system' } | Select-Object -ExpandProperty FullName)
+      Where-Object { -not $_.Name.StartsWith('.') } | Select-Object -ExpandProperty FullName)
     if ($list.Count -eq 0) { throw "skills 根目录为空: $root" }
   } elseif ($Dir) {
     $dirResolved = (Resolve-Path -LiteralPath $Dir -ErrorAction Stop).Path

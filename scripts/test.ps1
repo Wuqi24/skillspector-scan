@@ -464,6 +464,26 @@ print(os.getenv("T"))
   if ($loop6.Count -lt 1 -or $int6.Count -lt 1 -or $pub6.Count -lt 1) {
     Write-Host ("FAIL IPv6 分类: loop=" + $loop6.Count + " int=" + $int6.Count + " pub=" + $pub6.Count); $fail++
   } else { Write-Host 'OK 地址分类器（IPv6 loopback/私网/公网）' }
+
+  # 32) -AllInstalled 排除隐藏目录（.verified / .system 等）
+  $fakeHome2 = Join-Path $tmp 'fakehome2'
+  $fakeSkills2 = Join-Path $fakeHome2 'skills'
+  New-Item -ItemType Directory -Force -Path $fakeSkills2 | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $fakeSkills2 'normal-skill') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $fakeSkills2 '.hidden-skill') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeSkills2 'normal-skill\SKILL.md') -Value "---`nname: normal-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeSkills2 '.hidden-skill\SKILL.md') -Value "---`nname: hidden`ndescription: t`n---`n# t"
+  $oldHome2 = $env:CODEX_HOME
+  $env:CODEX_HOME = $fakeHome2
+  try {
+    $rep32 = Join-Path $tmp 'all32.json'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script -AllInstalled -Json -Output $rep32 2>$null
+    $obj32 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep32 -ErrorAction SilentlyContinue | ConvertFrom-Json
+    $names32 = @($obj32.targets | ForEach-Object { ($_.path -split '[\\/]')[-1] })
+    if ($names32 -contains '.hidden-skill' -or $names32 -notcontains 'normal-skill') {
+      Write-Host ('FAIL -AllInstalled 隐藏目录过滤: ' + ($names32 -join ',')); $fail++
+    } else { Write-Host 'OK -AllInstalled 排除隐藏目录（.verified/.system 等）' }
+  } finally { $env:CODEX_HOME = $oldHome2 }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
