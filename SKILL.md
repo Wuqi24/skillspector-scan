@@ -142,11 +142,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 
 ## 规则注册表（冻结版，非毒库）
 
-检测规则是**冻结的规则注册表** `rules/rules.yaml`（17 条：16 条检测 + 1 条关联，另含 4 条辅助提示），人工审核后固定。**不支持联网更新、不支持运行时收录**（已取消毒库设计）。规则变化 = 人工编辑 `rules.yaml` → `rules_hash` 变化 → 旧已审记录自动失效提示，需重新审核。
+检测规则是**冻结的规则注册表** `rules/rules.yaml`，人工审核后固定：**36 条唯一检测/关联规则**（注册表共 40 个规则条目，其中 YRM 多行恶意特征为 5 条 regex）、**4 条辅助提示（hints）**、**11 条简报展示投影（projections）**。**不支持联网更新、不支持运行时收录**（已取消毒库设计）。规则变化 = 人工编辑 `rules.yaml` → `rules_hash` 变化 → 旧已审记录自动失效提示，需重新审核。
 
-每条规则登记：`rule_id` / `rule_priority` / `rule_type`（detection|correlation）/ `severity`（critical|suspicious|info|reference）/ `confidence_policy` / `description` / `regex`。辅助提示（回环、AI 身份文件、声明本地联网、文档/注释语境）不占 17 条名额，不计入风险计数。
+每条规则登记：`rule_id` / `rule_priority` / `rule_type`（detection|correlation）/ `severity`（critical|suspicious|info|reference）/ `confidence_policy` / `description` / `regex`；关联规则另带 `when_all` 条件，投影规则定义 `from` 源规则。辅助提示（回环、AI 身份文件、声明本地联网、文档/注释语境）不计入风险计数。
 
-引擎能力（Python AST、依赖分析、git 历史、manifest 变化等）是内置检查器，不依赖规则注册表；普通模式输出不变，简报模式按注册表规则渲染并保留检查器输出（映射为对应严重级）。
+**普通模式与简报模式共用同一规则源**：引擎只加载一份注册表，简报模式通过 `briefProjectionFrom` 把普通规则命中投影为更具体的简报规则（如 E2 → SECRET_ENV_READ），不另维护一套规则。
+
+引擎能力（Python AST、统一依赖分析、git 历史、manifest 变化、地址分类器等）是内置检查器，不依赖规则注册表；普通模式输出不变，简报模式按投影渲染并保留检查器输出（映射为对应严重级）。
 
 ## 简报模式与已审记录（v2.0）
 

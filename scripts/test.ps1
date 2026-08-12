@@ -186,7 +186,7 @@ return eval(input);
   if ($ast05f.Count -lt 1 -or $r.Score -lt 25) { Write-Host ('FAIL AST05 外部指令来源漏检/未计分: score=' + $r.Score); $fail++ }
   else { Write-Host ('OK AST05 外部指令来源检出并计分: score=' + $r.Score) }
 
-  # 13) 规则注册表：rules.yaml 17 条（16 detection + 1 correlation）+ hints
+  # 13) 规则注册表：rules.yaml 统一注册表（检测/关联 + hints + 投影）条目数校验
   $regText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\rules.yaml')
   $ruleCount = ([regex]::Matches($regText, '(?m)^\s*-\s*rule_id:')).Count
   if ($ruleCount -lt 17) {

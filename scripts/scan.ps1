@@ -386,7 +386,6 @@ function Get-RegistryRules {
     $script:multiPatterns = @($mp)
     $script:hintPatterns = @($hp)
     # 简报展示投影：普通规则命中在简报模式下显示为更具体的简报规则
-    $script:briefProjections = @{}
     $script:briefProjectionFrom = @{}
     foreach ($pj in @($o.projections)) {
       $pjObj = [pscustomobject]@{
@@ -394,7 +393,6 @@ function Get-RegistryRules {
         priority = if ($null -ne $pj.priority) { [int]$pj.priority } else { 0 }
         category = [string]$pj.category; description = [string]$pj.description
       }
-      $script:briefProjections[$pj.rule_id] = $pjObj
       $script:briefProjectionFrom[[string]$pj.from] = $pjObj
     }
     $script:registryLoaded = $true
