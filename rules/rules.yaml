@@ -9,6 +9,7 @@ updated: 2026-08-12
 config:
   max_file_size_mb: 1
   max_direct_deps: 30
+  obfuscation_line_length: 2000
   source_whitelist:
     - https://pypi.org
     - https://files.pythonhosted.org

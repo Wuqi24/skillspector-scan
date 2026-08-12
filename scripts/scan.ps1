@@ -115,7 +115,7 @@ $skipExt = @($assetExt) + @($binaryExt)
 # 已知可文本扫描的扩展名（内容嗅探只对不在此列表的文件执行）
 $knownTextExt = @(
   '.md','.markdown','.rst','.yaml','.yml','.json','.toml','.xml','.ini','.cfg','.conf',
-  '.editorconfig','.gitignore','.gitattributes','.dockerignore','.svg','.lock',
+  '.editorconfig','.gitignore','.gitattributes','.dockerignore','.svg','.lock','.html','.htm',
   '.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.sh','.bash','.zsh','.ps1','.psm1','.psd1',
   '.bat','.cmd','.rb','.pl','.lua','.go','.rs','.c','.cpp','.h','.java','.kt','.php','.swift','.sql'
 )
@@ -1181,6 +1181,10 @@ function Invoke-ScanPath {
       [void]$errors.Add('规则注册表不可用，简报模式退化为普通规则扫描')
     }
   }
+  $obfLen = 2000
+  if ($briefMode -and $registry.config -and $registry.config.obfuscation_line_length) {
+    try { $obfLen = [int]$registry.config.obfuscation_line_length } catch {}
+  }
 
   # 分类：可扫描文本 vs 跳过清单
   $scanFiles = New-Object System.Collections.ArrayList
@@ -1266,10 +1270,12 @@ function Invoke-ScanPath {
     $rules = if ($briefMode -and $scanRuleList) { $scanRuleList } else { $linePatterns }
     for ($li = 0; $li -lt $lines.Count; $li++) {
       $line = $lines[$li]
+      $ln = $li + 1
+      $lineHasObf = $false
       foreach ($p in $rules) {
         if ($f.Name -like '.env*' -and $p.id -in @('E2', 'CRED', 'SECRET_ENV_READ', 'CREDENTIAL_REQUEST')) { continue }
         foreach ($m in [regex]::Matches($line, $p.re, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-          $ln = $li + 1
+          if ($p.id -eq 'OBFUSCATION') { $lineHasObf = $true }
           $col = $m.Index + 1
           $inFence = $fenceSet.ContainsKey($ln)
           $inComment = $commentLines.ContainsKey($ln)
@@ -1295,6 +1301,18 @@ function Invoke-ScanPath {
           $conf = Get-Confidence -activity $act -invocation $inv -execution $exec -context $fctx -fileStatus $fileStatus[$f.FullName]
           [void]$findings.Add((New-Finding -id $p.id -severity $p.sev -file $f.FullName -line $ln -column $col -text $text -context $fctx -doc $doc -score $score -activity $act -invocation $inv -execution $exec -confidence $conf))
         }
+      }
+      # OBFUSCATION 补充启发式：非注释/非文档超长单行（简报模式，阈值可配置）
+      if ($briefMode -and -not $lineHasObf -and $line.Length -gt $obfLen -and -not $commentLines.ContainsKey($ln)) {
+        $fctx2 = if ($context -eq 'doc' -and $fenceSet.ContainsKey($ln)) { 'doc_code' } else { $context }
+        $doc2 = $false
+        if ($self) { $doc2 = $true }
+        elseif ($fctx2 -eq 'doc_code') { $doc2 = $false }
+        elseif ($fctx2 -in @('comment', 'doc')) { $doc2 = $true }
+        $exec2 = if ($fctx2 -eq 'doc_code') { 'documented' } elseif ($context -eq 'code') { 'executable' } else { 'unknown' }
+        $snip = $line
+        if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) + '…' }
+        [void]$findings.Add((New-Finding -id 'OBFUSCATION' -severity 'suspicious' -file $f.FullName -line $ln -column 1 -text ($snip + '（超长单行 ' + $line.Length + ' 字符）') -context $fctx2 -doc $doc2 -score $true -activity 'unknown' -invocation 'unknown' -execution $exec2 -confidence 'medium'))
       }
     }
     foreach ($p in $multiPatterns) {
@@ -1617,12 +1635,19 @@ function Get-BriefDependencyFindings {
       }
       $hookNames = @('preinstall', 'postinstall', 'prepare')
       foreach ($hn in $hookNames) {
-        if ($obj.scripts -and $obj.scripts.$hn) {
+        if ($obj.scripts -and (@($obj.scripts.PSObject.Properties.Name) -contains $hn)) {
           $ln = 1
           for ($i = 0; $i -lt $lines.Count; $i++) {
             if ($lines[$i] -match ('"' + $hn + '"\s*:')) { $ln = $i + 1; break }
           }
-          [void]$out.Add((New-Finding -id 'DEP_HOOK' -severity 'critical' -file $f.FullName -line $ln -text ('安装脚本钩子: ' + $hn + ' = ' + $obj.scripts.$hn) -context 'config' -doc $false))
+          $hookVal = [string]$obj.scripts.$hn
+          # 分层：含下载/执行特征 → critical/high；空或正常构建命令 → suspicious/medium；无法判断 → critical/medium
+          $danger = $hookVal -match '(?i)(\bcurl\b|\bwget\b|Invoke-WebRequest|Invoke-RestMethod|Invoke-Expression|\biex\b|\bpowershell\b|\bcmd\b|\beval\s*\(|\bexec\s*\(|/bin/(ba)?sh|download|FromBase64|base64\s*-d)'
+          $safe = $hookVal -match '(?i)^\s*(node-gyp rebuild|npm run [A-Za-z0-9_\-]+|yarn [A-Za-z0-9_\-]+|pnpm [A-Za-z0-9_\-]+|node \S+\.(js|mjs|cjs)(\s|$)|tsc(\s|$)|webpack(\s|$)|vite(\s|$)|rollup(\s|$)|esbuild(\s|$)|make(\s|$)|cmake(\s|$)|python \S+\.py|gradle(\s|$)|mvn(\s|$)|ng build|nest build)\s*$'
+          $sev = 'suspicious'; $conf = 'medium'
+          if ($danger) { $sev = 'critical'; $conf = 'high' }
+          elseif ($hookVal.Trim() -ne '' -and -not $safe) { $sev = 'critical'; $conf = 'medium' }
+          [void]$out.Add((New-Finding -id 'DEP_HOOK' -severity $sev -file $f.FullName -line $ln -text ('安装脚本钩子: ' + $hn + ' = ' + $hookVal) -context 'config' -doc $false -confidence $conf))
         }
       }
       foreach ($rf in @(Get-ItemsSafe $root | Where-Object { $_.Name -eq 'setup.py' })) {
