@@ -417,7 +417,11 @@ function Get-Targets {
 
 function Read-TextFile {
   param([string]$path)
-  $fs = [System.IO.File]::OpenRead($path)
+  try {
+    $fs = [System.IO.File]::OpenRead($path)
+  } catch {
+    return [pscustomobject]@{ Text = $null; Encoding = ''; Truncated = $false; Status = 'permission_denied' }
+  }
   try {
     $len = [Math]::Min([long]$fs.Length, [long]($MaxFileBytes + 1))
     $buf = New-Object byte[] $len
@@ -446,12 +450,15 @@ function Read-TextFile {
       $text = $strict.GetString($buf)
     } catch {
       $enc = 'gbk'
-      try { $text = [System.Text.Encoding]::GetEncoding(936).GetString($buf) }
-      catch { $text = [System.Text.Encoding]::Default.GetString($buf) }
+      try {
+        $gbk = [System.Text.Encoding]::GetEncoding(936, [System.Text.EncoderFallback]::ExceptionFallback, [System.Text.DecoderFallback]::ExceptionFallback)
+        $text = $gbk.GetString($buf)
+      }
+      catch { return [pscustomobject]@{ Text = $null; Encoding = 'unknown'; Truncated = $truncated; Status = 'unsupported_encoding' } }
     }
   }
   $text = $text -replace "`r`n", "`n" -replace "`r", "`n"
-  return [pscustomobject]@{ Text = $text; Encoding = $enc; Truncated = $truncated }
+  return [pscustomobject]@{ Text = $text; Encoding = $enc; Truncated = $truncated; Status = 'ok' }
 }
 
 function Get-ContextForFile {
@@ -490,7 +497,7 @@ function Get-LineNumber {
 
 function Get-ItemsSafe {
   # 安全枚举：BFS 遍历目录，不进入符号链接/联接（防循环目录卡死与越界读取）
-  param([string]$root, [switch]$IncludeDirs)
+  param([string]$root, [switch]$IncludeDirs, [System.Collections.ArrayList]$errors = $null)
   $out = New-Object System.Collections.ArrayList
   $item = Get-Item -Force -LiteralPath $root -ErrorAction SilentlyContinue
   if (-not $item) { return $out }
@@ -498,7 +505,14 @@ function Get-ItemsSafe {
   $queue.Enqueue($item)
   while ($queue.Count -gt 0) {
     $dir = $queue.Dequeue()
-    foreach ($child in @(Get-ChildItem -Force -LiteralPath $dir.FullName -ErrorAction SilentlyContinue)) {
+    $children = $null
+    try {
+      $children = @(Get-ChildItem -Force -LiteralPath $dir.FullName -ErrorAction Stop)
+    } catch {
+      if ($errors) { [void]$errors.Add([pscustomobject]@{ path = $dir.FullName; reason = 'permission_denied' }) }
+      continue
+    }
+    foreach ($child in $children) {
       if ($child.PSIsContainer) {
         if ($child.LinkType) {
           if ($IncludeDirs) { [void]$out.Add($child) }
@@ -1097,12 +1111,20 @@ function Invoke-ScanPath {
 
   $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
   if ($item.PSIsContainer) {
-    $allFiles = @(Get-ItemsSafe $root | Where-Object { $_.FullName -notmatch '\\\.git\\' })
+    $allFiles = @(Get-ItemsSafe $root -errors $errors | Where-Object { $_.FullName -notmatch '\\\.git\\' })
   } else {
     $allFiles = @($item)
     $root = Split-Path $item.FullName -Parent
   }
   $result.root = $root
+
+  # 目录枚举失败（无权限等）按 permission_denied 记录到跳过清单
+  $permErrs = @($errors | Where-Object { $_.PSObject.Properties['reason'] -and $_.reason -eq 'permission_denied' })
+  foreach ($de in $permErrs) {
+    [void]$skipped.Add([pscustomobject]@{ file = $de.path; reason = 'permission_denied' })
+    $skipReasons[$de.path] = 'permission_denied'
+  }
+  foreach ($de in $permErrs) { [void]$errors.Remove($de) }
 
   # 简报模式：加载注册表规则（detection + hints）
   $scanRuleList = $null
@@ -1169,8 +1191,14 @@ function Invoke-ScanPath {
   # 逐文件单遍扫描
   foreach ($f in $scanFiles) {
     $content = Read-TextFile $f.FullName
-    if (-not $content) {
-      $fileStatus[$f.FullName] = 'failed'
+    if ($null -eq $content) {
+      $fileStatus[$f.FullName] = 'complete'
+      continue
+    }
+    if ($content.Status -ne 'ok') {
+      $skipReasons[$f.FullName] = $content.Status
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = $content.Status })
+      $fileStatus[$f.FullName] = 'skipped'
       continue
     }
     $fileStatus[$f.FullName] = 'complete'

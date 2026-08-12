@@ -320,6 +320,18 @@ print(os.getenv("T"))
   }
   if (-not $okA) { Write-Host 'FAIL 证据边界'; $fail++ }
   else { Write-Host 'OK 证据边界（sources 可追溯）' }
+
+  # 22) unsupported_encoding：所有编码回退失败 → skipped(unsupported_encoding) + analysis_status=partial
+  $enc = Join-Path $tmp 'badenc-skill'
+  New-Item -ItemType Directory -Force -Path $enc | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $enc 'SKILL.md') -Value "---`nname: badenc-skill`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllBytes((Join-Path $enc 'bad.txt'), [byte[]](0xFF, 0xFD, 0xFC, 0xFB))
+  $r = Invoke-BriefJson $enc
+  $t = $r.Target
+  $skipReason = @($t.skipped | Where-Object { $_.reason -eq 'unsupported_encoding' })
+  if ($t.analysis_status -ne 'partial' -or $skipReason.Count -lt 1) {
+    Write-Host ("FAIL unsupported_encoding: status=" + $t.analysis_status + " skipped=" + @($t.skipped).Count); $fail++
+  } else { Write-Host 'OK unsupported_encoding（跳过并标 partial）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
