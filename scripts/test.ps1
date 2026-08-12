@@ -365,6 +365,43 @@ print(os.getenv("T"))
   if ($t.analysis_status -ne 'partial' -or $binSkip.Count -lt 1 -or $u16Skip.Count -gt 0) {
     Write-Host ("FAIL 内容嗅探: status=" + $t.analysis_status + " binSkip=" + $binSkip.Count + " u16Skip=" + $u16Skip.Count); $fail++
   } else { Write-Host 'OK 内容嗅探（NUL→binary+partial，UTF-16 不误判）' }
+
+  # 25) manifest 差异：审核后新增二进制 → 旧审核失效（stale_content）；资产不进 manifest
+  $ms = Join-Path $tmp ('manifest-skill-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $ms | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ms 'SKILL.md') -Value "---`nname: manifest-skill`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllBytes((Join-Path $ms 'logo.png'), [byte[]](0x89, 0x50, 0x4E, 0x47))
+  $prevEap3 = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $ms 2>$null
+  $ErrorActionPreference = $prevEap3
+  $vp3 = @(Get-ChildItem -LiteralPath $vd -Filter ((Split-Path $ms -Leaf) + '@*.json') -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)
+  $rec = Get-Content -Raw -Encoding UTF8 -LiteralPath $vp3 | ConvertFrom-Json
+  $noAssetInManifest = -not (@($rec.files.PSObject.Properties.Name) -contains 'logo.png')
+  [System.IO.File]::WriteAllBytes((Join-Path $ms 'evil.bin'), [byte[]](0x4D, 0x5A, 0x00, 0x00))
+  $r = Invoke-BriefJson $ms
+  $st = $r.Target.verification.status
+  if ($vp3) { Remove-Item -LiteralPath $vp3 -Force -ErrorAction SilentlyContinue }
+  if (-not $noAssetInManifest -or $st -ne 'stale_content') {
+    Write-Host ("FAIL manifest 差异: noAsset=" + $noAssetInManifest + " status=" + $st); $fail++
+  } else { Write-Host 'OK manifest 差异（资产不入清单，新增二进制使旧审核失效）' }
+
+  # 26) AST 解析失败 → 文件 partial → 技能 partial → -MarkVerified 拒绝
+  $af2 = Join-Path $tmp 'astfail-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $af2 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $af2 'SKILL.md') -Value "---`nname: astfail-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $af2 'scripts\bad.py') -Value 'this is not python @@@'
+  $r = Invoke-BriefJson $af2
+  $t = $r.Target
+  $prevEap4 = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $af2 2>$null
+  $codeAst = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap4
+  $wroteAst = @(Get-ChildItem -LiteralPath $vd -Filter ('astfail-skill@*.json') -ErrorAction SilentlyContinue).Count -gt 0
+  if ($t.analysis_status -ne 'partial' -or $codeAst -eq 0 -or $wroteAst) {
+    Write-Host ("FAIL AST 失败审核边界: status=" + $t.analysis_status + " code=" + $codeAst + " wrote=" + $wroteAst); $fail++
+  } else { Write-Host 'OK AST 失败审核边界（partial 禁止写入）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

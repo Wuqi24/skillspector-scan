@@ -112,6 +112,13 @@ $binaryExt = @(
   '.pyc','.pyo','.whl','.deb','.rpm','.apk'
 )
 $skipExt = @($assetExt) + @($binaryExt)
+# 已知可文本扫描的扩展名（内容嗅探只对不在此列表的文件执行）
+$knownTextExt = @(
+  '.md','.markdown','.rst','.yaml','.yml','.json','.toml','.xml','.ini','.cfg','.conf',
+  '.editorconfig','.gitignore','.gitattributes','.dockerignore','.svg','.lock',
+  '.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.sh','.bash','.zsh','.ps1','.psm1','.psd1',
+  '.bat','.cmd','.rb','.pl','.lua','.go','.rs','.c','.cpp','.h','.java','.kt','.php','.swift','.sql'
+)
 
 # 行级模式：id / severity / regex。score=$false 表示仅作信号、不计分（如 E1URL）
 $linePatterns = @(
@@ -785,10 +792,11 @@ function Get-PythonExe {
 function Invoke-AstCheck {
   param([string[]]$pyFiles, [System.Collections.ArrayList]$errors)
   $out = New-Object System.Collections.ArrayList
+  $skippedFiles = New-Object System.Collections.ArrayList
   $py = Get-PythonExe
   if (-not $py) {
     [void]$errors.Add('未找到 Python，AST 分析已跳过（仅正则扫描）')
-    return $out
+    return [pscustomobject]@{ Findings = $out; SkippedFiles = $skippedFiles }
   }
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
@@ -809,21 +817,25 @@ function Invoke-AstCheck {
           foreach ($sk in @($obj.skips)) {
             if ($sk.file) {
               [void]$errors.Add(('AST 跳过 ' + $sk.file + ':' + $sk.line + ' ' + $sk.reason))
+              [void]$skippedFiles.Add($sk.file)
             }
           }
         } catch {
           [void]$errors.Add('AST 输出解析失败（退出码 ' + $pyCode + '）: ' + $_.Exception.Message)
+          foreach ($cf in $chunk) { [void]$skippedFiles.Add($cf) }
         }
       } elseif ($pyCode -ne 0) {
         [void]$errors.Add('AST 分析器异常退出（退出码 ' + $pyCode + '，无输出，发现可能不完整）')
+        foreach ($cf in $chunk) { [void]$skippedFiles.Add($cf) }
       }
     }
   } catch {
     [void]$errors.Add('AST 分析失败: ' + $_.Exception.Message)
+    foreach ($cf in $pyFiles) { [void]$skippedFiles.Add($cf) }
   } finally {
     $ErrorActionPreference = $prevEap
   }
-  return $out
+  return [pscustomobject]@{ Findings = $out; SkippedFiles = $skippedFiles }
 }
 
 function Expand-SafeZip {
@@ -1194,7 +1206,7 @@ function Invoke-ScanPath {
       $fileStatus[$f.FullName] = 'partial'
       continue
     }
-    if (Test-BinaryContent $f.FullName) {
+    if ($ext -notin $knownTextExt -and (Test-BinaryContent $f.FullName)) {
       [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary'; desc = '二进制内容（无法文本分析）' })
       $skipReasons[$f.FullName] = 'binary'
       $fileStatus[$f.FullName] = 'partial'
@@ -1312,7 +1324,9 @@ function Invoke-ScanPath {
   # Python AST（发现 .py 文件且 Python 可用时自动执行）
   $codeFiles = @($scanFiles | Where-Object { $_.Extension.ToLower() -in @('.py', '.js', '.mjs', '.cjs') } | Select-Object -ExpandProperty FullName)
   if (-not $NoAst -and $codeFiles.Count -gt 0) {
-    foreach ($af in @(Invoke-AstCheck -pyFiles $codeFiles -errors $errors)) { [void]$findings.Add($af) }
+    $astRes = Invoke-AstCheck -pyFiles $codeFiles -errors $errors
+    foreach ($af in @($astRes.Findings)) { [void]$findings.Add($af) }
+    foreach ($sf in @($astRes.SkippedFiles)) { $fileStatus[$sf] = 'partial' }
   }
 
   # OSV 已知漏洞查询
@@ -1666,7 +1680,7 @@ function Get-ManifestForSkill {
     $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
     if ($rel -match '(^|/)\.git(/|$)' -or $rel -in $exclNames -or $f.Name -like '.skillspector-baseline*') { continue }
     if ($f.PSIsContainer) { continue }
-    if ($f.Extension.ToLower() -in $skipExt) { continue }
+    if ($f.Extension.ToLower() -in $assetExt) { continue }
     $files[$rel] = (Get-HashOfFile $f.FullName)
   }
   foreach ($l in @(Get-ItemsSafe $root -IncludeDirs | Where-Object { $_.LinkType })) {
