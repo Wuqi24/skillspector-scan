@@ -484,6 +484,27 @@ print(os.getenv("T"))
       Write-Host ('FAIL -AllInstalled 隐藏目录过滤: ' + ($names32 -join ',')); $fail++
     } else { Write-Host 'OK -AllInstalled 排除隐藏目录（.verified/.system 等）' }
   } finally { $env:CODEX_HOME = $oldHome2 }
+
+  # 33) SSRF/Brief：metadata 保持 critical（不投影）；普通内网 IP 不重复投影；169.254.169.254 去重；普通模式 SSRF 保留
+  $ssrf = Join-Path $tmp 'ssrf-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $ssrf 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ssrf 'SKILL.md') -Value "---`nname: ssrf-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ssrf 'scripts\r.py') -Value "import requests`nrequests.get('http://metadata.google.internal/x')`nrequests.get('http://192.168.1.5/x')`nrequests.get('http://169.254.169.254/latest/')`nrequests.get('http://169.254.1.1/x')"
+  $r = Invoke-BriefJson $ssrf
+  $t = $r.Target
+  $md = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*metadata.google*' })
+  $mdBad = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*metadata.google*' -and $_.brief_id -eq 'INTERNAL_NET_CALL' })
+  $ip192 = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*192.168.1.5*' })
+  $ip192Bad = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*192.168.1.5*' -and $_.brief_id -eq 'INTERNAL_NET_CALL' })
+  $cls192 = @($t.findings | Where-Object { $_.id -eq 'INTERNAL_NET_CALL' -and $_.text -like '*192.168.1.5*' })
+  $mdIp = @($t.findings | Where-Object { $_.id -eq 'SSRF' -and $_.text -like '*169.254.169.254*' })
+  $mdIpDup = @($t.findings | Where-Object { $_.id -eq 'INTERNAL_NET_CALL' -and $_.text -like '*169.254.169.254*' })
+  $otherLl = @($t.findings | Where-Object { $_.id -eq 'INTERNAL_NET_CALL' -and $_.text -like '*169.254.1.1*' })
+  $rn = Invoke-ScanJson $ssrf
+  $ssrfNormal = @($rn.Findings | Where-Object { $_.id -eq 'SSRF' })
+  if ($md.Count -lt 1 -or $mdBad.Count -gt 0 -or $ip192.Count -lt 1 -or $ip192Bad.Count -gt 0 -or $cls192.Count -lt 1 -or $mdIp.Count -lt 1 -or $mdIpDup.Count -gt 0 -or $otherLl.Count -lt 1 -or $ssrfNormal.Count -lt 3) {
+    Write-Host ("FAIL SSRF/Brief: md=$($md.Count) mdBad=$($mdBad.Count) ip192=$($ip192.Count) ip192Bad=$($ip192Bad.Count) cls192=$($cls192.Count) mdIp=$($mdIp.Count) mdIpDup=$($mdIpDup.Count) otherLl=$($otherLl.Count) normalSSRF=$($ssrfNormal.Count)"); $fail++
+  } else { Write-Host 'OK SSRF/Brief（metadata critical、内网 IP 不重复投影、169.254.169.254 去重、普通模式保留）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

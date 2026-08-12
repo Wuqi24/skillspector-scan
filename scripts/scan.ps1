@@ -1297,6 +1297,7 @@ function Invoke-ScanPath {
       # 网络地址分类（简报模式）：IPv4/IPv6 统一走分类器生成 LOOPBACK/INTERNAL/PUBLIC finding
       if ($briefMode -and -not $commentLines.ContainsKey($ln)) {
         foreach ($ip in @(Get-IpCandidates $line)) {
+          if ($ip -eq '169.254.169.254') { continue }
           $cls = Get-AddressClass $ip
           $netId = $null; $netSev = ''; $netScore = $false
           if ($cls -eq 'loopback') { $netId = 'LOOPBACK_ACCESS'; $netSev = 'reference'; $netScore = $false }
@@ -1551,7 +1552,7 @@ function Get-CorrelationFindings {
 function Get-BehaviorSummary {
   # 确定性聚合：命中规则 → category → 去重 → 最多 5 个
   param($findings)
-  $cats = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' } | ForEach-Object {
+  $cats = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' -and -not (Get-BriefView $_).hide } | ForEach-Object {
     $v = Get-BriefView $_
     if ($v.projected) { $v.category }
     elseif ($ruleCategory.ContainsKey($_.id)) { $ruleCategory[$_.id] }
@@ -1569,7 +1570,7 @@ function Get-BriefTop3 {
   $actRank = @{ active = 4; mixed = 3; passive = 2; unknown = 1 }
   $invRank = @{ called = 5; framework_entry = 4; dynamic = 3; unknown = 2; not_called = 1 }
   $execRank = @{ executable = 3; unknown = 2; documented = 1 }
-  $cands = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' })
+  $cands = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' -and -not (Get-BriefView $_).hide })
   $sorted = @($cands | Sort-Object -Property `
     @{ Expression = { $sevRank[(Get-BriefSeverity (Get-BriefView $_).severity)] }; Descending = $true }, `
     @{ Expression = { $confRank[$_.confidence] }; Descending = $true }, `
@@ -1901,7 +1902,7 @@ function Get-VerificationText {
 
 function Get-BriefRiskSummary {
   param($r)
-  $risk = @($r.findings | Where-Object { -not $_.doc })
+  $risk = @($r.findings | Where-Object { -not $_.doc -and -not (Get-BriefView $_).hide })
   $crit = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'critical' }).Count
   $susp = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'suspicious' }).Count
   $info = @($risk | Where-Object { (Get-BriefSeverity (Get-BriefView $_).severity) -eq 'info' }).Count
@@ -1924,6 +1925,7 @@ function Get-InferenceText {
     INSTALL_HOOK = '供应链投毒/代码执行'
     INSECURE_HTTP_CALL = '通信可被窃听/篡改'
     INTERNAL_NET_CALL = '可能探测内网，需人工确认'
+    SSRF = '可能访问云元数据/内网，需人工确认'
     EVAL_EXEC = '潜在远程代码执行，需人工确认上下文'
     BASE64_DECODE = '可能用于隐藏载荷，需人工确认'
     OBFUSCATION = '可能隐藏恶意逻辑'
@@ -1971,12 +1973,24 @@ function Get-BriefSeverity {
 
 function Get-BriefView {
   # 简报投影视图：普通规则命中 → 简报规则 id/severity/desc/priority/category
+  # SSRF 特判：metadata 特征保持 SSRF critical 显示（不投影）；普通内部/回环纯 IP 隐藏其 INTERNAL 投影（地址分类器已展示）
   param($f)
+  if ($f.id -eq 'SSRF' -and -not $f.doc) {
+    if ($f.text -match 'metadata\.|instance-data|169\.254\.169\.254') {
+      return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false; hide = $false }
+    }
+    foreach ($ip in @(Get-IpCandidates $f.text)) {
+      $cls = Get-AddressClass $ip
+      if ($cls -in @('private', 'loopback')) {
+        return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false; hide = $true }
+      }
+    }
+  }
   if ($script:briefProjectionFrom -and $script:briefProjectionFrom.ContainsKey($f.id)) {
     $p = $script:briefProjectionFrom[$f.id]
-    return [pscustomobject]@{ id = $f.id; brief_id = $p.brief_id; severity = $p.severity; desc = $p.description; priority = $p.priority; category = $p.category; projected = $true }
+    return [pscustomobject]@{ id = $f.id; brief_id = $p.brief_id; severity = $p.severity; desc = $p.description; priority = $p.priority; category = $p.category; projected = $true; hide = $false }
   }
-  return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false }
+  return [pscustomobject]@{ id = $f.id; brief_id = $f.id; severity = $f.severity; desc = ''; priority = 0; category = ''; projected = $false; hide = $false }
 }
 
 function Get-BriefMarks {
@@ -2018,7 +2032,7 @@ function Render-BriefOne {
     }
   }
   [void]$lines.Add('▸ 详细发现:')
-  $risk = @($r.findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' })
+  $risk = @($r.findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' -and -not (Get-BriefView $_).hide })
   if ($risk.Count -eq 0) { [void]$lines.Add('  （无）') }
   else {
     foreach ($f in $risk) {
