@@ -1,6 +1,6 @@
 # 扫描模式速查
 
-内置脚本 `scripts/scan.ps1` 已内置全部模式（单遍扫描、编码自动探测、语境标注、base64 解码复查、多行特征）。下表供手动搜索备选；`rg` 可用优先 `rg`，否则用 `Select-String` 兜底。
+内置脚本 `scripts/scan.ps1` 已内置全部模式（单遍扫描、编码自动探测、语境标注、注释词法识别、base64 解码复查、多行特征）；简报模式（-Brief）按冻结注册表 `rules/rules.yaml`（17+4 条）渲染。下表供手动搜索备选；`rg` 可用优先 `rg`，否则用 `Select-String` 兜底。
 
 ## 基础命令
 
@@ -73,10 +73,12 @@
 - frontmatter：所有 `SKILL.md` 的 name/description 完整性与目录名一致性（MD）
 - `.env`：真实凭据变量名（值隐藏，CRED）
 - 符号链接/联接越界（SYMLINK）
+- 注释词法识别：Python `#`、JS/TS `//` 与 `/* */`、PowerShell/Shell/Ruby `#`、HTML `<!-- -->`，字符串内不算注释（lexer.py）
 - Python AST：`scripts/ast_check.py` 解析 .py 文件，输出 DC1-DC8 危险调用、E1 网络信号、TT3/TT5 轻量污点
 - JS 行为启发式：`scripts/ast_check.py` 对 .js/.mjs/.cjs 做轻量词法分析，输出 DC2/DC4/DC8（eval/exec/子进程）、E1（fetch/axios/http）、TT3/TT5（外部输入流入执行/网络）
 - git 历史：`-GitHistory` 扫描最近 N 次提交补丁中的疑似密钥（输出自动脱敏）
 - manifest 变化：配合基线使用时，SKILL.md / mcp.json / agents 配置哈希变化输出 RP（rug-pull）
+- 离线依赖分析（简报模式）：非白名单源（DEP_SOURCE）、疑似拼写相似包（DEP_TYPOSQUAT）、安装脚本钩子（DEP_HOOK）、未声明依赖（DEP_UNDECLARED）、直接依赖数超阈值（DEP_COUNT）
 
 ## 判断要点
 

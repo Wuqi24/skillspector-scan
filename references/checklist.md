@@ -183,3 +183,10 @@
 - 脚本按语境标注 code/config/doc/data；doc 语境（.md、围栏示例、扫描器自身）不计分，**例外**：技能自身 SKILL.md 正文中的指令类命中（P1/AR/SPL/MP/EA/TR/AST05）视为提示注入真实信号，计入评分
 - 已复核的发现可写入 `.skillspector-baseline.yaml`（`-InitBaseline`），复扫时自动抑制（`-Baseline`），`-ShowSuppressed` 查看被抑制项；基线同时记录 manifest 哈希，用于 RP 变化检测
 - 语境无法判断时，保留发现并标“需人工确认”，不要直接丢弃
+
+## 简报模式（-Brief）与已审记录（v2.0）
+
+- 注释/文档语境命中归“参考发现”，不计入风险计数与 TOP 3；`doc_code`（文档代码示例）是风险发现但 `execution=documented`、`confidence=low`
+- 关联规则只做“共存”判断（如凭证读取+回环访问），不推断数据流；correlation finding 的 `source_finding_id` 必须能追溯到原始文件证据
+- `-MarkVerified allow|deny` 仅对 `analysis_status=complete` 的扫描生效；已审记录按文件 SHA-256 清单 + 规则/配置/包表哈希比对，任何变化都会使旧结论失效提示
+- 规则来自冻结注册表 `rules/rules.yaml`（17+4 条），不支持联网更新或运行时收录；人工修改规则后旧审核自动失效

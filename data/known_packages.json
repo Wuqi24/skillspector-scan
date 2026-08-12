@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-08-12",
+  "packages": [
+    "requests", "numpy", "pandas", "flask", "django", "fastapi", "torch", "tensorflow",
+    "scikit-learn", "matplotlib", "scipy", "sqlalchemy", "pydantic", "pytest", "openai",
+    "anthropic", "boto3", "redis", "celery", "aiohttp", "httpx", "click", "jinja2",
+    "pillow", "beautifulsoup4", "lxml", "tqdm", "rich", "colorama", "pyyaml", "toml",
+    "python-dotenv", "schedule", "nltk", "spacy", "transformers", "datasets", "gym",
+    "jupyter", "notebook", "ipython", "psutil", "cryptography", "bcrypt", "jwt",
+    "passlib", "requests-html", "selenium", "playwright", "pygame", "opencv-python",
+    "pymongo", "psycopg2", "mysql-connector-python", "kafka-python", "fastparquet",
+    "shapely", "geopandas", "networkx", "sympy", "statsmodels", "seaborn", "plotly",
+    "dash", "streamlit", "gradio", "langchain", "llama-index", "duckdb", "pyarrow",
+    "apache-airflow", "dvc", "mlflow", "wandb", "polars", "orjson", "ujson", "msgpack",
+    "zstandard", "lz4", "xxhash", "numba", "cython", "setuptools", "wheel", "pip",
+    "uvicorn", "gunicorn", "werkzeug", "flask-cors", "python-multipart", "email-validator",
+    "phonenumbers", "python-dateutil", "pytz", "tzdata", "humanize", "inflect",
+    "tabulate", "prettytable", "blessed", "questionary", "typer", "fire", "invoke"
+  ]
+}

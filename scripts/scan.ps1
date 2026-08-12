@@ -13,6 +13,8 @@
     Python AST 危险调用与轻量污点（自动探测 python；-NoAst 关闭）
   - 可选 OSV.dev 已知漏洞查询（-CheckCVE，联网；失败自动降级为离线）
   - 可选 baseline 误报抑制（-InitBaseline / -Baseline / -ShowSuppressed）
+  - 简报模式（-Brief）：事实/推断两段式、TOP3、关联/参考/依赖分区、行为概要；风险标签为自动推断，不替代人工裁决
+  - 已审记录（-MarkVerified allow|deny）：写 ~/.codex/skills/.verified/，扫描时只读比对文件 SHA-256 清单
   - 输出文本或 JSON（-Json），可写文件（-Output）
   - 退出码：0 正常 / 1 存在 score>50 的目标 / 2 出错
 
@@ -50,26 +52,14 @@
   git 历史扫描深度（提交数），默认 20
 .PARAMETER Full
   展开全部命中明细（默认只输出风险概览与关键发现）
-.PARAMETER UpdateRules
-  从指定源更新检测规则（“毒库”）：https:// URL 或本地文件路径；更新前自动备份旧规则
-.PARAMETER ShowRules
-  显示当前检测规则的版本、来源与时效
-.PARAMETER RulesFile
-  指定规则文件路径（默认读取技能目录下 rules/patterns.json；用于测试或定制部署）
-.PARAMETER ExportRules
-  把当前生效的检测规则导出为 JSON 文件（可用于发布自定义规则源）
-.PARAMETER RuleId
-  收录新危害时使用的规则 ID（配合 -Regex 使用）
-.PARAMETER Severity
-  新规则的严重级：CRITICAL/HIGH/MEDIUM/LOW，默认 HIGH
-.PARAMETER Regex
-  新规则的正则表达式（会先校验能否编译）
-.PARAMETER Desc
-  新规则的通俗说明（默认用规则 ID）
-.PARAMETER MultiRule
-  收录为多行特征（multiPatterns）而不是行级模式
-.PARAMETER NoScore
-  新规则仅作信号、不计分（score=false）
+.PARAMETER Brief
+  简报模式：事实/推断两段式输出（行为概要 → TOP3 → 详细 → 参考 → 依赖）
+.PARAMETER Score
+  显示自动评分摘要（仅 -Brief 模式有效；自动推断指标，不代表放行/拒绝）
+.PARAMETER Interactive
+  多目标简报模式下进入序号交互（单目标时忽略；与 -Parallel 同用忽略）
+.PARAMETER MarkVerified
+  显式写入已审记录：allow|deny，必须与 -Path 配对；禁止与简报/导出参数同用
 #>
 [CmdletBinding()]
 param(
@@ -90,16 +80,10 @@ param(
   [switch]$GitHistory,
   [int]$GitDepth = 20,
   [switch]$Full,
-  [string]$UpdateRules,
-  [switch]$ShowRules,
-  [string]$RulesFile,
-  [string]$ExportRules,
-  [string]$RuleId,
-  [string]$Severity = 'HIGH',
-  [string]$Regex,
-  [string]$Desc,
-  [switch]$MultiRule,
-  [switch]$NoScore
+  [switch]$Brief,
+  [switch]$Score,
+  [switch]$Interactive,
+  [ValidateSet('allow', 'deny')][string]$MarkVerified
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,8 +91,10 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $skillName = 'skillspector-scan'
+$scannerVersion = '2.0.0'
 $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
+$lexerScript = Join-Path $PSScriptRoot 'lexer.py'
 $scriptPath = $MyInvocation.MyCommand.Path
 if (-not $scriptPath) { $scriptPath = Join-Path $PSScriptRoot 'scan.ps1' }
 $sevPoints = @{ CRITICAL = 50; HIGH = 25; MEDIUM = 10; MED = 10; LOW = 5 }
@@ -219,147 +205,178 @@ $owaspMap = @{
   DC4='AST01'; DC8='AST01'; TT3='AST06'; TT5='AST06'; AST05='AST05'
 }
 
-# ---------- 检测规则（“毒库”）加载与更新 ----------
-$rulesMeta = @{ version = '1.0.0'; updated = '2026-08-10'; source = '内置出厂规则'; patternCount = ($linePatterns.Count + $multiPatterns.Count) }
-$rulesFromFile = $false
+# ---------- 规则注册表（冻结版，非毒库） ----------
+$registry = @{ rules = @(); hints = @(); config = @{}; rules_version = '2.0.0'; schema_version = '1.0.0' }
+$registryLoaded = $false
 
-function Get-RulesPath {
-  if ($RulesFile) { return (Resolve-Path -LiteralPath $RulesFile -ErrorAction SilentlyContinue).Path }
-  return Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\patterns.json'
+function ConvertTo-CanonicalJson {
+  # 键排序、数组保序的规范化 JSON 序列化（用于 finding_id / fingerprint / 版本哈希）
+  param($InputObject)
+  if ($InputObject -is [System.Collections.IDictionary]) {
+    $pairs = @()
+    foreach ($k in ($InputObject.Keys | Sort-Object)) {
+      $escKey = [string]$k
+      $escKey = $escKey.Replace('\', '\\').Replace('"', '\"')
+      $pairs += ('"' + $escKey + '":' + (ConvertTo-CanonicalJson $InputObject[$k]))
+    }
+    return '{' + ($pairs -join ',') + '}'
+  }
+  if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+    $h = @{}
+    foreach ($prop in $InputObject.PSObject.Properties) { $h[$prop.Name] = $prop.Value }
+    return ConvertTo-CanonicalJson $h
+  }
+  if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+    $items = @()
+    foreach ($e in $InputObject) { $items += (ConvertTo-CanonicalJson $e) }
+    return '[' + ($items -join ',') + ']'
+  }
+  if ($null -eq $InputObject) { return 'null' }
+  if ($InputObject -is [bool]) { return $InputObject.ToString().ToLower() }
+  if ($InputObject -is [int] -or $InputObject -is [long] -or $InputObject -is [double]) { return $InputObject.ToString() }
+  $s = [string]$InputObject
+  $s = $s.Replace('\', '\\').Replace('"', '\"')
+  return '"' + $s + '"'
 }
 
-function Get-LoadedRules {
-  # 加载外部规则文件（rules/patterns.json 或 -RulesFile）；失败/缺失时回退内置出厂规则
-  $path = Get-RulesPath
-  if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $false }
+function Get-Sha256Hex {
+  param([string]$Text)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
-    $o = Get-Content -Raw -Encoding UTF8 -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json
-    if (-not $o.version -or -not $o.linePatterns -or @($o.linePatterns).Count -lt 5) { throw '规则文件缺少 version 或 linePatterns 过少' }
-    $script:linePatterns = @($o.linePatterns | ForEach-Object {
-      [pscustomobject]@{ id = $_.id; sev = $_.severity; re = $_.regex; score = if ($_.PSObject.Properties['score']) { [bool]$_.score } else { $true }; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } }
-    })
-    $script:multiPatterns = @($o.multiPatterns | ForEach-Object {
-      [pscustomobject]@{ id = $_.id; sev = $_.severity; re = $_.regex; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } }
-    })
-    $script:descMap = @{}
-    foreach ($kv in @($o.descMap.PSObject.Properties)) { $script:descMap[$kv.Name] = [string]$kv.Value }
-    # 规则文件里的 owasp 字段优先；未标注的检测项保留内置启发式映射
-    foreach ($p in @($o.linePatterns) + @($o.multiPatterns)) {
-      if ($p.PSObject.Properties['owasp'] -and $p.owasp) { $script:owaspMap[[string]$p.id] = [string]$p.owasp }
+    $h = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
+    return ([System.BitConverter]::ToString($h)).Replace('-', '').ToLower()
+  } finally { $sha.Dispose() }
+}
+
+function Get-HashOfFile {
+  param([string]$Path)
+  return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+}
+
+function ConvertFrom-SimpleYaml {
+  # 解析 rules/rules.yaml 的固定结构（key: value / 列表 - value / 对象列表 - key: value）
+  param([string]$Path)
+  $root = @{}
+  $cur = $root
+  $curIndent = -1
+  $stack = New-Object System.Collections.Stack
+  $pendingList = $null
+  $pendingItem = $null
+  $pendingItemIndent = -1
+  $pendingContainer = $null   # @{ parent=..; key=..; indent=.. }
+  function ConvertFrom-SimpleYaml-Unquote {
+    param([string]$v)
+    $v = $v.Trim()
+    if ($v.Length -ge 2 -and (($v.StartsWith("'") -and $v.EndsWith("'")) -or ($v.StartsWith('"') -and $v.EndsWith('"')))) {
+      return $v.Substring(1, $v.Length - 2)
     }
-    $script:rulesMeta = @{
-      version = [string]$o.version
-      updated = [string]$o.updated
-      source  = [string]$o.source
-      patternCount = @($o.linePatterns).Count + @($o.multiPatterns).Count
+    return $v
+  }
+  foreach ($raw in @(Get-Content -Encoding UTF8 -LiteralPath $Path)) {
+    if ($raw -match '^\s*(#.*)?$') { continue }
+    $indent = if ($raw -match '^(\s*)\S') { $matches[1].Length } else { 0 }
+    $line = $raw.Trim()
+    if ($line -match '^-\s+(.+)$') {
+      $itemText = $matches[1]
+      if ($pendingContainer -and $indent -gt $pendingContainer.indent) {
+        $list = New-Object System.Collections.ArrayList
+        $pendingContainer.parent[$pendingContainer.key] = $list
+        $pendingList = $list
+        $pendingContainer = $null
+      }
+      if ($itemText -match '^([A-Za-z0-9_]+):\s*(.*)$') {
+        $item = @{}
+        if ($null -eq $pendingList) { throw '列表项不在列表容器中: ' + $itemText }
+        [void]$pendingList.Add($item)
+        $pendingItem = $item
+        $pendingItemIndent = $indent
+        if ($matches[2] -ne '') { $item[$matches[1]] = ConvertFrom-SimpleYaml-Unquote $matches[2] }
+      } else {
+        if ($null -eq $pendingList) { throw '列表项不在列表容器中: ' + $itemText }
+        [void]$pendingList.Add((ConvertFrom-SimpleYaml-Unquote $itemText))
+        $pendingItem = $null
+      }
+      continue
     }
-    $script:rulesFromFile = $true
+    if ($line -match '^([A-Za-z0-9_]+):\s*(.*)$') {
+      $key = $matches[1]
+      $val = $matches[2]
+      $target = $null
+      if ($pendingItem -and $indent -gt $pendingItemIndent) { $target = $pendingItem }
+      else {
+        while ($stack.Count -gt 0 -and $indent -le $curIndent) {
+          $top = $stack.Pop()
+          $cur = $top.obj
+          $curIndent = $top.indent
+        }
+        $target = $cur
+        $pendingItem = $null
+      }
+      if ($val -eq '') {
+        $pendingContainer = @{ parent = $target; key = $key; indent = $indent }
+      } else {
+        $pendingContainer = $null
+        $target[$key] = ConvertFrom-SimpleYaml-Unquote $val
+        if (-not $target.ContainsKey($key) -or $target[$key] -is [string]) { }
+      }
+      continue
+    }
+    throw '无法解析的 YAML 行: ' + $raw
+  }
+  return $root
+}
+
+function Get-RegistryRules {
+  # 加载规则注册表（rules/rules.yaml）；失败时简报模式不可用但普通模式不受影响
+  $path = Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\rules.yaml'
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
+  try {
+    $o = ConvertFrom-SimpleYaml $path
+    if (-not $o.rules -or @($o.rules).Count -lt 5) { throw '规则注册表缺少 rules 或过少' }
+    $script:registry = @{
+      rules = @($o.rules)
+      hints = @($o.hints)
+      config = $o.config
+      rules_version = [string]$o.rules_version
+      schema_version = [string]$o.schema_version
+    }
+    $script:registryLoaded = $true
     return $true
   } catch {
-    Write-Output ('警告: 规则文件解析失败，回退内置出厂规则: ' + $_.Exception.Message)
+    Write-Output ('警告: 规则注册表解析失败: ' + $_.Exception.Message)
     return $false
   }
 }
 
-function Update-RulesFromSource {
-  param([string]$source)
-  if ($source -match '^https://') {
+function Get-RegistryHashes {
+  # 内容规范化哈希：rules.yaml / config / known_packages.json（键排序后 canonical JSON → SHA-256）
+  $rulesPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\rules.yaml'
+  $kpPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'data\known_packages.json'
+  $rulesHash = ''
+  $configHash = ''
+  $kpHash = ''
+  $kpVersion = ''
+  if (Test-Path -LiteralPath $rulesPath) {
+    $o = ConvertFrom-SimpleYaml $rulesPath
+    $rulesHash = Get-Sha256Hex (ConvertTo-CanonicalJson (@($o.rules) + @($o.hints)))
+    $configHash = Get-Sha256Hex (ConvertTo-CanonicalJson $o.config)
+  }
+  if (Test-Path -LiteralPath $kpPath) {
     try {
-      $content = (Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30).Content
-    } catch {
-      throw '下载规则失败（网络不可用或地址无效）: ' + $_.Exception.Message
-    }
-  } elseif ($source -match '^file://') {
-    $local = $source -replace '^file://', ''
-    if (-not (Test-Path -LiteralPath $local)) { throw '本地规则文件不存在: ' + $local }
-    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $local
-  } elseif (Test-Path -LiteralPath $source) {
-    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $source
-  } else {
-    throw '规则源仅支持 https:// URL 或本地文件路径'
+      $kp = Get-Content -Raw -Encoding UTF8 -LiteralPath $kpPath | ConvertFrom-Json
+      $kpHash = Get-Sha256Hex (ConvertTo-CanonicalJson $kp.packages)
+      $kpVersion = [string]$kp.version
+    } catch { $kpHash = '' }
   }
-  # 格式校验（防损坏/防投毒），通过后才允许替换
-  $o = $content | ConvertFrom-Json
-  if (-not $o.version -or -not $o.linePatterns -or @($o.linePatterns).Count -lt 5) {
-    throw '规则文件格式无效（缺少 version/linePatterns 或模式过少），已放弃更新'
+  return [pscustomobject]@{
+    rules_hash = $rulesHash
+    config_hash = $configHash
+    known_packages_hash = $kpHash
+    known_packages_version = $kpVersion
   }
-  $rulesDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'rules'
-  if (-not (Test-Path -LiteralPath $rulesDir)) { New-Item -ItemType Directory -Force -Path $rulesDir | Out-Null }
-  $target = Join-Path $rulesDir 'patterns.json'
-  $bakName = 'patterns.json.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
-  if (Test-Path -LiteralPath $target) { Copy-Item -LiteralPath $target (Join-Path $rulesDir $bakName) -Force }
-  [System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding($false)))
-  $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash
-  Write-Output ('规则已更新: version=' + $o.version + ' 模式数=' + (@($o.linePatterns).Count + @($o.multiPatterns).Count) + ' 来源=' + $o.source)
-  Write-Output ('SHA256=' + $sha + '（旧规则已备份为 rules\' + $bakName + '）')
 }
 
-function Show-RulesInfo {
-  $path = Get-RulesPath
-  $used = if ($rulesFromFile) { '规则文件已加载（来源: ' + $rulesMeta.source + '）' } else { '内置出厂规则（无外部规则文件或加载失败）' }
-  Write-Output ('检测规则: version=' + $rulesMeta.version + ' 更新日期=' + $rulesMeta.updated + ' 模式数=' + $rulesMeta.patternCount)
-  Write-Output ('规则来源: ' + $used)
-  if ($path -and (Test-Path -LiteralPath $path)) { Write-Output ('规则文件: ' + $path) }
-  $mapped = @($owaspMap.GetEnumerator() | Where-Object { $_.Key -and $_.Value }).Count
-  Write-Output ('OWASP 映射: ' + $mapped + ' 个检测项已关联 OWASP Agentic Skills 分类（AST01 恶意技能 / AST03 过度权限 / AST05 外部指令来源 / AST06 隔离不足 等）')
-  try {
-    $age = (New-TimeSpan -Start ([datetime]::Parse($rulesMeta.updated)) -End (Get-Date)).Days
-    if ($age -gt 30) { Write-Output ('提示: 规则已 ' + $age + ' 天未更新，可运行 -UpdateRules <https://...> 更新') }
-  } catch {}
-}
-
-function Add-RuleEntry {
-  # 收录新危害：把一条规则写入当前毒库（默认 rules/patterns.json，可用 -RulesFile 指定）
-  if ($RuleId -notmatch '^[A-Za-z0-9_\-]{1,20}$') { throw '规则 ID 不合法（限字母/数字/_/-，不超过 20 字符）' }
-  if ($Severity -eq 'MED') { $Severity = 'MEDIUM' }
-  if ($Severity -notin @('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')) { throw '严重级必须是 CRITICAL/HIGH/MEDIUM/LOW' }
-  try { [void][regex]::new($Regex) } catch { throw '正则无法编译，已放弃收录: ' + $_.Exception.Message }
-  $path = Get-RulesPath
-  if (-not $path -or -not (Test-Path -LiteralPath $path)) {
-    # 尚无规则文件：先用当前生效规则生成一份
-    $path = if ($RulesFile) { $RulesFile } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'rules\patterns.json' }
-    $dir = Split-Path $path -Parent
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    $o = [pscustomobject]@{
-      version = $rulesMeta.version; updated = (Get-Date -Format 'yyyy-MM-dd'); source = $rulesMeta.source
-      linePatterns = @($linePatterns | ForEach-Object { [pscustomobject]@{ id = $_.id; severity = $_.sev; regex = $_.re; score = if ($_.PSObject.Properties['score']) { [bool]$_.score } else { $true }; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } } })
-      multiPatterns = @($multiPatterns | ForEach-Object { [pscustomobject]@{ id = $_.id; severity = $_.sev; regex = $_.re; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } } })
-      descMap = $descMap
-    }
-    [System.IO.File]::WriteAllText($path, ($o | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-  }
-  $bakName = $path + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
-  if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path $bakName -Force }
-  $o = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json
-  $list = if ($MultiRule) { @($o.multiPatterns) } else { @($o.linePatterns) }
-  $newList = New-Object System.Collections.ArrayList
-  $found = $false
-  foreach ($p in $list) {
-    if ($p.id -eq $RuleId) {
-      $found = $true
-      $keepOwasp = if ($p.PSObject.Properties['owasp'] -and $p.owasp) { [string]$p.owasp } else { '' }
-      [void]$newList.Add([pscustomobject]@{ id = $RuleId; severity = $Severity; regex = $Regex; score = (-not $NoScore); owasp = $keepOwasp })
-    } else {
-      [void]$newList.Add($p)
-    }
-  }
-  if (-not $found) { [void]$newList.Add([pscustomobject]@{ id = $RuleId; severity = $Severity; regex = $Regex; score = (-not $NoScore); owasp = '' }) }
-  if ($MultiRule) { $o.multiPatterns = @($newList) } else { $o.linePatterns = @($newList) }
-  $dm = @{}
-  if ($o.descMap) { foreach ($kv in @($o.descMap.PSObject.Properties)) { $dm[$kv.Name] = [string]$kv.Value } }
-  $dm[$RuleId] = if ($Desc) { $Desc } else { $RuleId }
-  $o.descMap = $dm
-  $v = [string]$o.version
-  if ($v -match '^(\d+)\.(\d+)\.(\d+)$') { $o.version = $matches[1] + '.' + $matches[2] + '.' + ([int]$matches[3] + 1) }
-  else { $o.version = $v + '.1' }
-  $o.updated = Get-Date -Format 'yyyy-MM-dd'
-  [System.IO.File]::WriteAllText($path, ($o | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-  Write-Output ('已收录规则: ' + $RuleId + ' [' + $Severity + '] 正则=' + $Regex)
-  Write-Output ('规则文件: ' + $path + '（版本 ' + $o.version + '，旧规则已备份 ' + $bakName + '）')
-  [void](Get-LoadedRules)
-}
-
-[void](Get-LoadedRules)
+[void](Get-RegistryRules)
 
 function Get-SkillsRoot {
   if ($env:CODEX_HOME) { return Join-Path $env:CODEX_HOME 'skills' }
@@ -498,19 +515,33 @@ function Get-ItemsSafe {
 }
 
 function New-Finding {
-  param($id, $severity, $file, $line, $text, $context, $doc, $score = $true)
-  [pscustomobject]@{
+  param($id, $severity, $file, $line, $text, $context, $doc, $score = $true,
+        [int]$column = 0, [string]$activity = 'unknown', [string]$invocation = 'unknown',
+        [string]$execution = 'unknown', [string]$confidence = 'medium', [string]$sourceId = '')
+  $masked = Get-MaskedText $text
+  $obj = [pscustomobject]@{
+    finding_id = ''
     id       = $id
     desc     = if ($descMap.ContainsKey($id)) { $descMap[$id] } else { '' }
     owasp    = if ($owaspMap.ContainsKey($id)) { $owaspMap[$id] } else { '' }
     severity = $severity
     file     = $file
     line     = $line
-    text     = (Get-MaskedText $text)
+    column   = $column
+    text     = $masked
     context  = $context
     doc      = [bool]$doc
     score    = [bool]$score
+    activity = $activity
+    invocation = $invocation
+    execution = $execution
+    confidence = $confidence
+    source_finding_id = @()
   }
+  if ($sourceId) { $obj.source_finding_id = @($sourceId) }
+  $idInput = [ordered]@{ id = $id; severity = $severity; file = $file; line = $line; column = $column; text = $masked; context = $context; activity = $activity; invocation = $invocation; execution = $execution; confidence = $confidence }
+  $obj.finding_id = (Get-Sha256Hex (ConvertTo-CanonicalJson $idInput)).Substring(0, 24)
+  return $obj
 }
 
 function Get-MaskedText {
@@ -969,13 +1000,16 @@ function Invoke-ParallelScans {
             path = $r.path; root = $r.root; score = [int]$r.score; severity = $r.severity; recommendation = $r.recommendation;
             hasExecutable = [bool]$r.hasExecutable; findings = @($r.findings); suppressed = @($r.suppressed);
             dependencies = @($r.dependencies); skipped = @($r.skipped); errors = @($r.errors);
-            severityCounts = $r.severityCounts; topCategories = @($r.topCategories); topFindings = @($r.topFindings)
+            severityCounts = $r.severityCounts; topCategories = @($r.topCategories); topFindings = @($r.topFindings);
+            analysis_status = $r.analysis_status; reference_findings = @($r.reference_findings);
+            correlation_findings = @($r.correlation_findings); dependency_findings = @($r.dependency_findings);
+            behavior_summary = @($r.behavior_summary); top3 = @($r.top3); verification = $r.verification
           })
         } catch {
-          [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务输出解析失败: ' + $_.Exception.Message) })
+          [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务输出解析失败: ' + $_.Exception.Message); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' } })
         }
       } else {
-        [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务无输出（可能启动失败）') })
+        [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务无输出（可能启动失败）'); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' } })
       }
       if ($queue.Count -gt 0) {
         $t2 = $queue.Dequeue()
@@ -1003,6 +1037,8 @@ function Build-WorkerArgs {
   if ($GitHistory) { [void]$args.Add('-GitHistory'); [void]$args.Add('-GitDepth'); [void]$args.Add($GitDepth) }
   if ($Python) { [void]$args.Add('-Python'); [void]$args.Add($Python) }
   if ($NoAst) { [void]$args.Add('-NoAst') }
+  if ($Brief) { [void]$args.Add('-Brief') }
+  if ($Score) { [void]$args.Add('-Score') }
   return ,@($args.ToArray())
 }
 
@@ -1039,19 +1075,25 @@ function Invoke-ScanPath {
   param([string]$scanPath, [string]$displayPath)
   $result = [ordered]@{
     path = $displayPath; root = $scanPath; score = 0; severity = 'LOW'; recommendation = '';
-    hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @()
+    hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @();
+    analysis_status = 'complete'; scan_files = @(); skip_reasons = @(); reference_findings = @();
+    correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @();
+    verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' }
   }
   $findings = New-Object System.Collections.ArrayList
   $suppressed = New-Object System.Collections.ArrayList
   $skipped = New-Object System.Collections.ArrayList
   $errors = New-Object System.Collections.ArrayList
   $self = ((Split-Path $scanPath -Leaf) -eq $skillName)
+  $briefMode = $Brief -or ($env:SKILLSPECTOR_BRIEF -eq '1')
   $root = $scanPath
   $allFiles = @()
   $hasExec = $false
   $cveCandidates = New-Object System.Collections.ArrayList
   $baselineFp = @{}
   if ($global:baselineFp) { $baselineFp = $global:baselineFp }
+  $fileStatus = @{}
+  $skipReasons = @{}
 
   $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
   if ($item.PSIsContainer) {
@@ -1062,48 +1104,117 @@ function Invoke-ScanPath {
   }
   $result.root = $root
 
+  # 简报模式：加载注册表规则（detection + hints）
+  $scanRuleList = $null
+  if ($briefMode) {
+    if (-not $registryLoaded) { [void](Get-RegistryRules) }
+    if ($registryLoaded) {
+      $scanRuleList = New-Object System.Collections.ArrayList
+      foreach ($r in @($registry.rules)) {
+        if ($r.rule_type -eq 'detection' -and $r.regex) {
+          [void]$scanRuleList.Add([pscustomobject]@{ id = $r.rule_id; sev = $r.severity; re = $r.regex; score = $true; priority = [int]$r.rule_priority })
+        }
+      }
+      foreach ($h in @($registry.hints)) {
+        if ($h.regex) {
+          [void]$scanRuleList.Add([pscustomobject]@{ id = $h.rule_id; sev = $h.severity; re = $h.regex; score = $false; priority = [int]$h.rule_priority })
+        }
+      }
+    } else {
+      [void]$errors.Add('规则注册表不可用，简报模式退化为普通规则扫描')
+    }
+  }
+
   # 分类：可扫描文本 vs 跳过清单
   $scanFiles = New-Object System.Collections.ArrayList
   foreach ($f in $allFiles) {
     if ($f.Name -like '.skillspector-baseline*' -or $f.Name -in @('.DS_Store', 'Thumbs.db')) { continue }
     if ($f.FullName -match '\\\.git\\') { continue }
     if ($skipExt -contains $f.Extension.ToLower()) {
-      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = '二进制/无法文本分析' })
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'binary' })
+      $skipReasons[$f.FullName] = 'binary'
       continue
     }
     if ($f.Length -gt $MaxFileBytes) {
-      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = ('超过单文件分析上限 ' + [Math]::Round($MaxFileBytes / 1MB, 1) + 'MB') })
+      [void]$skipped.Add([pscustomobject]@{ file = $f.FullName; reason = 'oversized' })
+      $skipReasons[$f.FullName] = 'oversized'
       continue
     }
     [void]$scanFiles.Add($f)
   }
 
+  # 简报模式：注释词法分析（code 文件）
+  $commentMap = @{}
+  if ($briefMode) {
+    $lexExts = @('.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.ps1','.psm1','.psd1','.sh','.bash','.zsh','.rb','.pl','.lua','.html','.htm','.xml','.svg')
+    $lexFiles = @($scanFiles | Where-Object { $_.Extension.ToLower() -in $lexExts } | Select-Object -ExpandProperty FullName)
+    if ($lexFiles.Count -gt 0) {
+      $py = Get-PythonExe
+      if ($py) {
+        $lexRaw = @(& $py -X utf8 $lexerScript @lexFiles 2>$null) -join ''
+        if ($lexRaw) {
+          try {
+            $lexObj = $lexRaw | ConvertFrom-Json
+            foreach ($prop in $lexObj.files.PSObject.Properties) { $commentMap[$prop.Name] = $prop.Value }
+          } catch {
+            [void]$errors.Add('注释词法分析输出解析失败: ' + $_.Exception.Message)
+          }
+        }
+      } else {
+        [void]$errors.Add('未找到 Python，注释语境识别已跳过')
+      }
+    }
+  }
+
   # 逐文件单遍扫描
   foreach ($f in $scanFiles) {
     $content = Read-TextFile $f.FullName
-    if (-not $content) { continue }
+    if (-not $content) {
+      $fileStatus[$f.FullName] = 'failed'
+      continue
+    }
+    $fileStatus[$f.FullName] = 'complete'
     $context = Get-ContextForFile $f $root
     if ($context -eq 'code') { $hasExec = $true }
     $isDoc = ($context -eq 'doc') -or $self
     $fenceSet = @{}
     $lines = $content.Text -split "`n"
     if ($context -eq 'doc') { $fenceSet = Get-FenceLines $lines }
+    $commentLines = @{}
+    if ($briefMode -and $commentMap.ContainsKey($f.FullName)) {
+      foreach ($n in @($commentMap[$f.FullName].comment_lines)) { $commentLines[[int]$n] = $true }
+    }
+    $rules = if ($briefMode -and $scanRuleList) { $scanRuleList } else { $linePatterns }
     for ($li = 0; $li -lt $lines.Count; $li++) {
       $line = $lines[$li]
-      foreach ($p in $linePatterns) {
-        if ($f.Name -like '.env*' -and $p.id -in @('E2', 'CRED')) { continue }
+      foreach ($p in $rules) {
+        if ($f.Name -like '.env*' -and $p.id -in @('E2', 'CRED', 'SECRET_ENV_READ', 'CREDENTIAL_REQUEST')) { continue }
         foreach ($m in [regex]::Matches($line, $p.re, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
           $ln = $li + 1
-          $doc = $isDoc -or $fenceSet.ContainsKey($ln)
-          if ($doc -and $f.Name -eq 'SKILL.md' -and $p.id -in $instructionIds -and -not $fenceSet.ContainsKey($ln)) {
-            # 技能自身 SKILL.md 里的指令类命中（提示注入/反拒答/记忆投毒等）是真实信号，
-            # 不按文档语境排除；扫描器自扫仍按 selfdoc 排除
-            $doc = $self
+          $col = $m.Index + 1
+          $inFence = $fenceSet.ContainsKey($ln)
+          $inComment = $commentLines.ContainsKey($ln)
+          $fctx = $context
+          if ($inComment -and $context -eq 'code') { $fctx = 'comment' }
+          elseif ($context -eq 'doc' -and $inFence) { $fctx = 'doc_code' }
+          $doc = $isDoc -or $inFence -or $inComment
+          if (-not $briefMode) {
+            if ($doc -and $f.Name -eq 'SKILL.md' -and $p.id -in $instructionIds -and -not $inFence) {
+              $doc = $self
+            }
+          } else {
+            if ($self) { $doc = $true }
+            elseif ($fctx -eq 'doc_code') { $doc = $false }
+            elseif ($fctx -in @('comment', 'doc')) { $doc = $true }
           }
           $text = $line.Trim()
           if ($text.Length -gt 160) { $text = $text.Substring(0, 160) + '…' }
           $score = if ($p.PSObject.Properties['score']) { [bool]$p.score } else { $true }
-          [void]$findings.Add((New-Finding -id $p.id -severity $p.sev -file $f.FullName -line $ln -text $text -context $context -doc $doc -score $score))
+          $act = Get-Activity $m.Value
+          $inv = Get-Invocation $m.Value
+          $exec = if ($fctx -eq 'doc_code') { 'documented' } elseif ($context -eq 'code') { 'executable' } else { 'unknown' }
+          $conf = Get-Confidence -activity $act -invocation $inv -execution $exec -context $fctx -fileStatus $fileStatus[$f.FullName]
+          [void]$findings.Add((New-Finding -id $p.id -severity $p.sev -file $f.FullName -line $ln -column $col -text $text -context $fctx -doc $doc -score $score -activity $act -invocation $inv -execution $exec -confidence $conf))
         }
       }
     }
@@ -1112,7 +1223,9 @@ function Invoke-ScanPath {
         $ln = Get-LineNumber $content.Text $m.Index
         $t = $m.Value -replace '\s+', ' '
         if ($t.Length -gt 160) { $t = $t.Substring(0, 160) + '…' }
-        [void]$findings.Add((New-Finding -id $p.id -severity $p.sev -file $f.FullName -line $ln -text ('多行特征: ' + $t) -context $context -doc ($isDoc -or $fenceSet.ContainsKey($ln)) ))
+        $docM = $isDoc -or $fenceSet.ContainsKey($ln)
+        $execM = if ($docM) { 'documented' } else { 'executable' }
+        [void]$findings.Add((New-Finding -id $p.id -severity $p.sev -file $f.FullName -line $ln -text ('多行特征: ' + $t) -context $context -doc $docM -execution $execM ))
       }
     }
     foreach ($bf in @(Test-Base64Payload -text $content.Text -file $f.FullName -context $context -doc $isDoc)) {
@@ -1154,6 +1267,11 @@ function Invoke-ScanPath {
     [void]$unique.Add($f)
   }
   $findings = $unique
+
+  # 简报模式：关联规则（受限共存）
+  if ($briefMode) {
+    foreach ($cf in @(Get-CorrelationFindings $findings)) { [void]$findings.Add($cf) }
+  }
 
   # baseline 抑制
   foreach ($f in $findings) {
@@ -1209,7 +1327,18 @@ function Invoke-ScanPath {
   $result.suppressed = @($suppressed)
   $result.skipped = @($skipped)
   $result.errors = @($errors)
-  $result.rules = [pscustomobject]@{ version = $rulesMeta.version; updated = $rulesMeta.updated; source = $rulesMeta.source }
+  $result.scan_files = @($scanFiles | Select-Object -ExpandProperty FullName)
+  $result.skip_reasons = $skipReasons
+  $result.analysis_status = if (@($fileStatus.Values | Where-Object { $_ -eq 'failed' }).Count -gt 0) { 'failed' } elseif ($skipped.Count -gt 0 -or @($fileStatus.Values | Where-Object { $_ -eq 'partial' }).Count -gt 0) { 'partial' } else { 'complete' }
+  $result.rules = [pscustomobject]@{ version = $registry.rules_version; schema = $registry.schema_version; scanner = $scannerVersion }
+  if ($briefMode) {
+    $result.reference_findings = @($findings | Where-Object { $_.doc })
+    $result.correlation_findings = @($findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })
+    $result.dependency_findings = @(Get-BriefDependencyFindings $root)
+    $result.behavior_summary = @(Get-BehaviorSummary $findings)
+    $result.top3 = @(Get-BriefTop3 $findings)
+    $result.verification = Get-VerificationStatus $root $result.scan_files
+  }
   return $result
 }
 
@@ -1240,50 +1369,506 @@ function Invoke-TargetScan {
   }
 }
 
+function Get-Activity {
+  # 固定启发式：命中片段含变量/参数/环境读取 → passive/mixed；字面量 → active
+  param([string]$matchText)
+  $varLike = $matchText -match '\$\w+|process\.env|os\.environ\s*\[|os\.getenv\s*\(|getenv\s*\(|environ\.get|\.get\s*\(|input\s*\(|\bargv\b|param\s*\('
+  if ($varLike) {
+    if ($matchText -match 'https?://|/[\w.\-]+/') { return 'mixed' }
+    return 'passive'
+  }
+  return 'active'
+}
+
+function Get-Invocation {
+  # 固定启发式：入口模式 → framework_entry；动态访问 → dynamic；函数定义行 → not_called；其余 unknown
+  param([string]$matchText)
+  if ($matchText -match '__main__|^\s*main\s*\(') { return 'framework_entry' }
+  if ($matchText -match 'getattr\s*\(|globals\(\)\s*\[|locals\(\)\s*\[') { return 'dynamic' }
+  if ($matchText -match '^\s*(async\s+def|def|function|func)\s+\w+\s*\(') { return 'not_called' }
+  return 'unknown'
+}
+
+function Get-Confidence {
+  # 固定算法：doc_code/解析失败 → low；executable + active + called/framework_entry → high；其余 medium
+  param([string]$activity, [string]$invocation, [string]$execution, [string]$context, [string]$fileStatus)
+  if ($context -eq 'doc_code' -or $fileStatus -in @('partial', 'failed')) { return 'low' }
+  if ($execution -ne 'executable') { return 'low' }
+  if ($activity -eq 'active' -and $invocation -in @('called', 'framework_entry')) { return 'high' }
+  return 'medium'
+}
+
+function Get-CorrelationFindings {
+  # 受限共存关联：凭证类 risk finding 与回环 reference finding 同技能并存 → 新 finding（不推断数据流）
+  param($findings)
+  $out = New-Object System.Collections.ArrayList
+  $credIds = @('CREDENTIAL_REQUEST', 'SECRET_ENV_READ', 'CREDENTIAL_FILE_ACCESS')
+  $cred = @($findings | Where-Object { $_.id -in $credIds -and -not $_.doc })
+  $loop = @($findings | Where-Object { $_.id -eq 'LOOPBACK_ACCESS' })
+  if ($cred.Count -gt 0 -and $loop.Count -gt 0) {
+    $conf = 'high'
+    foreach ($c in $cred) { if ($c.confidence -ne 'high') { $conf = 'medium' } }
+    $sources = New-Object System.Collections.ArrayList
+    foreach ($c in $cred) { [void]$sources.Add([ordered]@{ finding_id = $c.finding_id; file = $c.file; line = $c.line; snippet = $c.text }) }
+    foreach ($l in $loop) { [void]$sources.Add([ordered]@{ finding_id = $l.finding_id; file = $l.file; line = $l.line; snippet = $l.text }) }
+    $f = New-Finding -id 'CREDENTIAL_LOOPBACK_COEXIST' -severity 'suspicious' -file $cred[0].file -line $cred[0].line -column $cred[0].column -text '同一 Skill 内同时存在凭证读取与回环访问，需人工确认是否相关（共存，非数据流）' -context 'code' -doc $false -score $false -activity 'unknown' -invocation 'unknown' -execution 'unknown' -confidence $conf
+    $f.source_finding_id = @($sources | ForEach-Object { $_.finding_id })
+    $f | Add-Member -NotePropertyName sources -NotePropertyValue @($sources) -Force
+    [void]$out.Add($f)
+  }
+  return $out
+}
+
+function Get-BehaviorSummary {
+  # 确定性聚合：命中规则 → category → 去重 → 最多 5 个
+  param($findings)
+  $catMap = @{
+    DOWNLOAD_EXECUTE = '执行'; PUBLIC_IP_CALL = '网络'; EXFIL = '网络'; CREDENTIAL_REQUEST = '凭证';
+    SECRET_ENV_READ = '凭证'; CREDENTIAL_FILE_ACCESS = '凭证'; SYSTEM_FILE_MODIFY = '权限';
+    PRIVILEGE_ESCALATION = '权限'; BROWSER_SESSION_ACCESS = '凭证'; INSTALL_HOOK = '依赖';
+    INSECURE_HTTP_CALL = '网络'; INTERNAL_NET_CALL = '网络'; EVAL_EXEC = '执行'; BASE64_DECODE = '混淆';
+    OBFUSCATION = '混淆'; UNDECLARED_INSTALL = '依赖'
+  }
+  $cats = @($findings | Where-Object { -not $_.doc -and $catMap.ContainsKey($_.id) } | ForEach-Object { $catMap[$_.id] } | Select-Object -Unique)
+  if ($cats.Count -gt 5) { $cats = @($cats[0..4]) }
+  return @($cats)
+}
+
+function Get-BriefTop3 {
+  # 固定排序：severity > confidence > activity > invocation > execution > rule_priority > file/column/line/finding_id
+  param($findings)
+  $sevRank = @{ critical = 2; suspicious = 1; info = 0; reference = 0 }
+  $confRank = @{ high = 3; medium = 2; low = 1 }
+  $actRank = @{ active = 4; mixed = 3; passive = 2; unknown = 1 }
+  $invRank = @{ called = 5; framework_entry = 4; dynamic = 3; unknown = 2; not_called = 1 }
+  $execRank = @{ executable = 3; unknown = 2; documented = 1 }
+  $priority = @{}
+  foreach ($r in @($registry.rules) + @($registry.hints)) { $priority[$r.rule_id] = [int]$r.rule_priority }
+  $cands = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' })
+  $sorted = @($cands | Sort-Object -Property `
+    @{ Expression = { $sevRank[(Get-BriefSeverity $_.severity)] }; Descending = $true }, `
+    @{ Expression = { $confRank[$_.confidence] }; Descending = $true }, `
+    @{ Expression = { $actRank[$_.activity] }; Descending = $true }, `
+    @{ Expression = { $invRank[$_.invocation] }; Descending = $true }, `
+    @{ Expression = { $execRank[$_.execution] }; Descending = $true }, `
+    @{ Expression = { if ($priority.ContainsKey($_.id)) { $priority[$_.id] } else { 0 } }; Descending = $true }, `
+    file, column, line, finding_id)
+  return @($sorted | Select-Object -First 3)
+}
+
+function Get-EditDistance {
+  # Levenshtein 距离（小字符串用）
+  param([string]$a, [string]$b)
+  $la = $a.Length; $lb = $b.Length
+  if ($la -eq 0) { return $lb }
+  if ($lb -eq 0) { return $la }
+  $prev = New-Object int[] ($lb + 1)
+  $cur = New-Object int[] ($lb + 1)
+  for ($j = 0; $j -le $lb; $j++) { $prev[$j] = $j }
+  for ($i = 1; $i -le $la; $i++) {
+    $cur[0] = $i
+    for ($j = 1; $j -le $lb; $j++) {
+      $cost = if ($a[$i - 1] -eq $b[$j - 1]) { 0 } else { 1 }
+      $cur[$j] = [Math]::Min([Math]::Min(($prev[$j] + 1), ($cur[$j - 1] + 1)), ($prev[$j - 1] + $cost))
+    }
+    $tmp = $prev; $prev = $cur; $cur = $tmp
+  }
+  return $prev[$lb]
+}
+
+function Get-BriefDependencyFindings {
+  # 依赖离线分析：非白名单源 / 疑似拼写相似包 / 安装脚本钩子 / 未声明依赖 / 直接依赖数
+  param([string]$root)
+  $out = New-Object System.Collections.ArrayList
+  $kp = @()
+  $kpPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'data\known_packages.json'
+  if (Test-Path -LiteralPath $kpPath) {
+    try { $kp = @((Get-Content -Raw -Encoding UTF8 -LiteralPath $kpPath | ConvertFrom-Json).packages) } catch {}
+  }
+  $whitelist = @($registry.config.source_whitelist)
+  $maxDeps = if ($registry.config.max_direct_deps) { [int]$registry.config.max_direct_deps } else { 30 }
+  $declared = @{}
+  $imported = @{}
+
+  foreach ($rf in @(Get-ItemsSafe $root | Where-Object { $_.Name -match '^(requirements.*\.txt|Pipfile|environment\.ya?ml)$' })) {
+    $lines = @(Get-Content -Encoding UTF8 -LiteralPath $rf.FullName -ErrorAction SilentlyContinue)
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+      $l = $lines[$i].Trim()
+      if ($l -eq '' -or $l.StartsWith('#') -or $l.StartsWith('[')) { continue }
+      if ($l -match '^\s*--index-url\s+(\S+)' -or $l -match '^\s*-i\s+(\S+)') {
+        $src = $matches[1]
+        if (-not ($whitelist | Where-Object { $src.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })) {
+          [void]$out.Add((New-Finding -id 'DEP_SOURCE' -severity 'suspicious' -file $rf.FullName -line ($i + 1) -text ('依赖源不在白名单: ' + $src) -context 'config' -doc $false))
+        }
+        continue
+      }
+      if ($l -match '^(git\+)?https?://(\S+)') {
+        $src = $matches[1] + $matches[2]
+        $nonWhitelist = -not ($whitelist | Where-Object { $src.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($l -match '[#&]egg=([A-Za-z0-9_.\-]+)' -and $nonWhitelist) {
+          $pkg = $matches[1]
+          $declared[$pkg.ToLower()] = $true
+          $near = @($kp | Where-Object { $_.Length -ge 4 -and (Get-EditDistance $pkg.ToLower() $_.ToLower()) -le 2 })
+          if ($near.Count -gt 0) {
+            [void]$out.Add((New-Finding -id 'DEP_TYPOSQUAT' -severity 'critical' -file $rf.FullName -line ($i + 1) -text ('疑似拼写相似包: ' + $pkg + '（相似于 ' + $near[0] + '，来源非白名单）') -context 'config' -doc $false))
+          } else {
+            [void]$out.Add((New-Finding -id 'DEP_SOURCE' -severity 'suspicious' -file $rf.FullName -line ($i + 1) -text ('依赖来自非白名单源: ' + $pkg + ' ← ' + $src) -context 'config' -doc $false))
+          }
+        } elseif ($nonWhitelist) {
+          [void]$out.Add((New-Finding -id 'DEP_SOURCE' -severity 'suspicious' -file $rf.FullName -line ($i + 1) -text ('依赖 URL 不在白名单: ' + $src) -context 'config' -doc $false))
+        }
+        continue
+      }
+      if ($l -match '^([A-Za-z0-9_.\-]+)\s*(==|>=|<=|~=|!=|===|<|>)\s*([^\s;#]+)') {
+        $declared[$matches[1].ToLower()] = $true
+      } elseif ($l -match '^([A-Za-z0-9_.\-]+)\s*(#.*)?$') {
+        $declared[$matches[1].ToLower()] = $true
+      }
+    }
+  }
+
+  foreach ($f in @(Get-ItemsSafe $root | Where-Object { $_.Name -eq 'package.json' })) {
+    try {
+      $obj = Get-Content -Raw -Encoding UTF8 -LiteralPath $f.FullName -ErrorAction Stop | ConvertFrom-Json
+      $lines = @(Get-Content -Encoding UTF8 -LiteralPath $f.FullName -ErrorAction SilentlyContinue)
+      foreach ($sec in @('dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies')) {
+        if ($obj.$sec) { foreach ($prop in $obj.$sec.PSObject.Properties) { $declared[$prop.Name.ToLower()] = $true } }
+      }
+      $hookNames = @('preinstall', 'postinstall', 'prepare')
+      foreach ($hn in $hookNames) {
+        if ($obj.scripts -and $obj.scripts.$hn) {
+          $ln = 1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match ('"' + $hn + '"\s*:')) { $ln = $i + 1; break }
+          }
+          [void]$out.Add((New-Finding -id 'DEP_HOOK' -severity 'critical' -file $f.FullName -line $ln -text ('安装脚本钩子: ' + $hn + ' = ' + $obj.scripts.$hn) -context 'config' -doc $false))
+        }
+      }
+      foreach ($rf in @(Get-ItemsSafe $root | Where-Object { $_.Name -eq 'setup.py' })) {
+        $sl = @(Get-Content -Encoding UTF8 -LiteralPath $rf.FullName -ErrorAction SilentlyContinue)
+        for ($i = 0; $i -lt $sl.Count; $i++) {
+          if ($sl[$i] -match 'os\.system|subprocess|Popen|shutil\.rmtree|exec\s*\(') {
+            [void]$out.Add((New-Finding -id 'DEP_HOOK' -severity 'critical' -file $rf.FullName -line ($i + 1) -text ('setup.py 执行系统命令: ' + $sl[$i].Trim()) -context 'code' -doc $false))
+          }
+        }
+      }
+    } catch {}
+  }
+
+  # 代码 import 收集（.py / .js / .ts）
+  foreach ($cf in @(Get-ItemsSafe $root | Where-Object { $_.Extension.ToLower() -in @('.py', '.js', '.mjs', '.cjs', '.ts', '.tsx') })) {
+    $cl = @(Get-Content -Encoding UTF8 -LiteralPath $cf.FullName -ErrorAction SilentlyContinue)
+    foreach ($l in $cl) {
+      $t = $l.Trim()
+      if ($t -match '^\s*(import|from)\s+([A-Za-z0-9_]+)') { $imported[$matches[2].ToLower()] = $true }
+      elseif ($t -match '(require\s*\(\s*[\x22\x27]|from\s+[\x22\x27])([A-Za-z0-9_\-\./@]+)[\x22\x27]') { $imported[($matches[2] -split '/')[0].ToLower()] = $true }
+    }
+  }
+  foreach ($k in @($imported.Keys)) {
+    if (-not $declared.ContainsKey($k) -and $k -notmatch '^(os|sys|re|json|pathlib|typing|collections|itertools|functools|math|random|datetime|time|subprocess|shutil|tempfile|logging|urllib|requests|http|ssl|socket|base64|hashlib|hmac|uuid|asyncio|concurrent|threading|multiprocessing|argparse|configparser|csv|io|string|struct|textwrap|unittest|inspect|traceback|warnings|abc|enum|glob|fnmatch|platform|signal|socket|sqlite3|xml|html|webbrowser|zlib|gzip|bz2|lzma|zipfile|tarfile|pickle|shelve|dbm|csv|email|calendar|decimal|fractions|numbers|operator|statistics|bisect|array|weakref|copy|pprint|dataclasses|contextlib|functools|types|typing|__future__)$' -and $k -notmatch '^(node:|react|react-dom|vue|next|express|typescript|@types/|@/)') {
+      [void]$out.Add((New-Finding -id 'DEP_UNDECLARED' -severity 'suspicious' -file $root -line 0 -text ('代码引用了未声明的包: ' + $k) -context 'config' -doc $false))
+    }
+  }
+
+  if ($declared.Count -gt $maxDeps) {
+    [void]$out.Add((New-Finding -id 'DEP_COUNT' -severity 'suspicious' -file $root -line 0 -text ('直接依赖数 ' + $declared.Count + ' 超过阈值 ' + $maxDeps) -context 'config' -doc $false))
+  }
+  return $out
+}
+
+function Get-TargetIdentity {
+  param([string]$root)
+  $full = [System.IO.Path]::GetFullPath($root)
+  $norm = $full.Replace('\', '/').TrimEnd('/').ToLower()
+  $hash = Get-Sha256Hex $norm
+  $name = Split-Path $full -Leaf
+  $safe = $name -replace '[\\/:*?"<>| ]', '_'
+  return [pscustomobject]@{ identity = ($safe + '@' + $hash.Substring(0, 12)); path_hash = $hash.Substring(0, 12); name = $safe }
+}
+
+function Get-VerifiedDir {
+  return Join-Path $env:USERPROFILE '.codex\skills\.verified'
+}
+
+function Get-ManifestForSkill {
+  param([string]$root)
+  $files = @{}
+  $symlinks = @{}
+  $exclNames = @('.skillspector-baseline.yaml', '.skillspector-verified.yaml', '.DS_Store', 'Thumbs.db')
+  foreach ($f in @(Get-ItemsSafe $root)) {
+    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+    if ($rel -match '(^|/)\.git(/|$)' -or $rel -in $exclNames -or $f.Name -like '.skillspector-baseline*') { continue }
+    if ($f.PSIsContainer) { continue }
+    if ($f.Extension.ToLower() -in $skipExt) { continue }
+    $files[$rel] = (Get-HashOfFile $f.FullName)
+  }
+  foreach ($l in @(Get-ItemsSafe $root -IncludeDirs | Where-Object { $_.LinkType })) {
+    $rel = $l.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+    $symlinks[$rel] = [string]$l.Target
+  }
+  return [pscustomobject]@{ files = $files; symlinks = $symlinks }
+}
+
+function Write-AtomicJson {
+  param([string]$path, $obj)
+  $dir = Split-Path $path -Parent
+  $tmp = Join-Path $dir ('.' + (Split-Path $path -Leaf) + '.tmp')
+  $json = $obj | ConvertTo-Json -Depth 8
+  $fs = [System.IO.File]::Create($tmp)
+  try {
+    $bytes = ([System.Text.UTF8Encoding]::new($false)).GetBytes($json)
+    $fs.Write($bytes, 0, $bytes.Length)
+    $fs.Flush($true)
+  } finally { $fs.Dispose() }
+  Move-Item -LiteralPath $tmp -Destination $path -Force
+}
+
+function Get-VerificationStatus {
+  param([string]$root)
+  $ti = Get-TargetIdentity $root
+  $vp = Join-Path (Get-VerifiedDir) ($ti.identity + '.json')
+  if (-not (Test-Path -LiteralPath $vp)) {
+    return [pscustomobject]@{ status = 'none'; decision = ''; date = '' }
+  }
+  try {
+    $v = Get-Content -Raw -Encoding UTF8 -LiteralPath $vp | ConvertFrom-Json
+    $man = Get-ManifestForSkill $root
+    $hashes = Get-RegistryHashes
+    $curFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $man.files)
+    $oldFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $v.files)
+    $sameFiles = ($curFiles -eq $oldFiles)
+    $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version)
+    if ($sameFiles -and $sameEnv) { return [pscustomobject]@{ status = 'valid'; decision = $v.decision; date = $v.verified_at } }
+    if ($sameFiles -and -not $sameEnv) { return [pscustomobject]@{ status = 'stale_env'; decision = $v.decision; date = $v.verified_at } }
+    return [pscustomobject]@{ status = 'stale_content'; decision = $v.decision; date = $v.verified_at }
+  } catch {
+    return [pscustomobject]@{ status = 'none'; decision = ''; date = '' }
+  }
+}
+
+function Invoke-MarkVerified {
+  param([string]$decision)
+  $target = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+  $r = Invoke-TargetScan $target
+  if ($r.analysis_status -ne 'complete') {
+    throw ('analysis_status=' + $r.analysis_status + '，禁止写入已审记录（仅 complete 可审核）')
+  }
+  $man = Get-ManifestForSkill $r.root
+  $hashes = Get-RegistryHashes
+  $ti = Get-TargetIdentity $r.root
+  $fpInput = [ordered]@{
+    target_identity = $ti.identity
+    files = $man.files
+    symlinks = $man.symlinks
+    scanner_version = $scannerVersion
+    rules_version = $registry.rules_version
+    rules_hash = $hashes.rules_hash
+    config_version = '1.0.0'
+    config_hash = $hashes.config_hash
+    known_packages_version = $hashes.known_packages_version
+    known_packages_hash = $hashes.known_packages_hash
+    schema_version = $registry.schema_version
+  }
+  $record = [ordered]@{
+    decision = $decision
+    verified_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    scanner_version = $scannerVersion
+    rules_version = $registry.rules_version
+    rules_hash = $hashes.rules_hash
+    config_version = '1.0.0'
+    config_hash = $hashes.config_hash
+    known_packages_version = $hashes.known_packages_version
+    known_packages_hash = $hashes.known_packages_hash
+    schema_version = $registry.schema_version
+    report_fingerprint = (Get-Sha256Hex (ConvertTo-CanonicalJson $fpInput))
+    target_identity = $ti.identity
+    analysis_status = 'complete'
+    files = $man.files
+    symlinks = $man.symlinks
+  }
+  $dir = Get-VerifiedDir
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+  $vp = Join-Path $dir ($ti.identity + '.json')
+  Write-AtomicJson $vp $record
+  Write-Output ('已审记录已写入: ' + $vp + '（decision=' + $decision + '）')
+}
+
+function Get-VerificationText {
+  param($v)
+  if (-not $v) { return '无已审记录' }
+  switch ($v.status) {
+    'valid' { return ('上次已审：' + $v.decision + '（' + $v.date + '）') }
+    'stale_env' { return ('扫描规则或配置已更新，上次结论可能失效（' + $v.date + '：' + $v.decision + '）') }
+    'stale_content' { return ('内容已变，上次结论可能失效（' + $v.date + '：' + $v.decision + '）') }
+    default { return '无已审记录' }
+  }
+}
+
+function Get-BriefRiskSummary {
+  param($r)
+  $risk = @($r.findings | Where-Object { -not $_.doc })
+  $crit = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'critical' }).Count
+  $susp = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'suspicious' }).Count
+  $info = @($risk | Where-Object { (Get-BriefSeverity $_.severity) -eq 'info' }).Count
+  $ref = @($r.reference_findings).Count
+  return ('🔴 ' + $crit + ' 严重 / 🟡 ' + $susp + ' 可疑 / 💡 ' + $info + ' 提示 / 📄 ' + $ref + ' 参考')
+}
+
+function Get-InferenceText {
+  param([string]$ruleId)
+  $map = @{
+    DOWNLOAD_EXECUTE = '供应链攻击/远程代码执行'
+    PUBLIC_IP_CALL = '绕过 DNS，通信对象可疑'
+    EXFIL = '窃取凭证/数据'
+    CREDENTIAL_REQUEST = '窃取凭证/数据'
+    SECRET_ENV_READ = '窃取凭证/数据'
+    CREDENTIAL_FILE_ACCESS = '窃取凭证/数据'
+    SYSTEM_FILE_MODIFY = '权限提升/系统篡改'
+    PRIVILEGE_ESCALATION = '权限提升/系统篡改'
+    BROWSER_SESSION_ACCESS = '窃取会话/凭证'
+    INSTALL_HOOK = '供应链投毒/代码执行'
+    INSECURE_HTTP_CALL = '通信可被窃听/篡改'
+    INTERNAL_NET_CALL = '可能探测内网，需人工确认'
+    EVAL_EXEC = '潜在远程代码执行，需人工确认上下文'
+    BASE64_DECODE = '可能用于隐藏载荷，需人工确认'
+    OBFUSCATION = '可能隐藏恶意逻辑'
+    UNDECLARED_INSTALL = '供应链/未声明行为'
+  }
+  if ($map.ContainsKey($ruleId)) { return $map[$ruleId] }
+  return ''
+}
+
+function Get-RuleDesc {
+  param([string]$ruleId)
+  foreach ($r in @($registry.rules) + @($registry.hints)) {
+    if ($r.rule_id -eq $ruleId) { return $r.description }
+  }
+  if ($descMap.ContainsKey($ruleId)) { return $descMap[$ruleId] }
+  $legacyDesc = @{
+    YRM = '多行恶意特征'; DC4 = '执行外部进程'; DC8 = '非字面量动态执行'; SC1 = '依赖未锁定版本';
+    SC4 = '依赖存在已知漏洞'; MD = '元数据/命名问题'; SYMLINK = '链接指向技能目录外'; RP = '安装后清单被改动';
+    CRED = '疑似密钥/凭据'; DEP_SOURCE = '依赖源不在白名单'; DEP_TYPOSQUAT = '疑似拼写相似包';
+    DEP_HOOK = '安装脚本钩子'; DEP_COUNT = '直接依赖数超阈值'; DEP_UNDECLARED = '未声明依赖';
+    TT3 = '密钥/凭据流向网络'; TT5 = '外部输入流入代码执行'; OBS = '混淆内容（base64等）'; ZW = '隐藏不可见字符';
+    AST05 = '外部指令来源'; AR = '要求“永不拒绝/绕过限制”'; P1 = '试图覆盖或忽略指令';
+    SPL = '诱导泄露系统提示'; MP = '试图长期篡改记忆/上下文'; EA = '过度自主执行、绕过确认';
+    TR = '触发词过于宽泛'; E1 = '向外部发送数据'; E1URL = '外部网络地址（信号）'; E2 = '读取环境变量/密钥';
+    E3 = '扫描敏感文件/目录'; E5 = '上传到云存储'; SSRF = '访问内网或云元数据地址'; AS = '窥探其他代理配置';
+    DC = '危险代码调用（执行命令/动态执行）'; DC7 = '动态属性访问'; SC2 = '远程下载并执行'; SC3 = '混淆/编码后执行';
+    RA = '持久化/开机自启'; PE = '提权或绕过限制'; TM = '工具参数滥用'; DEL = '删除类危险操作';
+    YR1 = '恶意特征（反弹shell/木马）'; YR2 = '恶意特征（webshell）'; YR3 = '恶意特征（挖矿）'; YR4 = '恶意特征（攻击工具）'
+  }
+  if ($legacyDesc.ContainsKey($ruleId)) { return $legacyDesc[$ruleId] }
+  return $ruleId
+}
+
+function Get-BriefSeverity {
+  param([string]$sev)
+  switch ($sev) {
+    'CRITICAL' { return 'critical' }
+    'HIGH' { return 'critical' }
+    'MEDIUM' { return 'suspicious' }
+    'MED' { return 'suspicious' }
+    'LOW' { return 'info' }
+    default { return $sev }
+  }
+}
+
+function Get-BriefMarks {
+  param($f)
+  $mark = if ($f.activity -eq 'active') { '【主动】' } elseif ($f.activity -eq 'passive') { '【被动】' } elseif ($f.activity -eq 'mixed') { '【混合】' } else { '【未知】' }
+  if ($f.invocation -eq 'not_called') { $mark += '【未实际调用】' }
+  elseif ($f.invocation -eq 'framework_entry') { $mark += '【入口】' }
+  if ($f.execution -eq 'documented') { $mark += '【文档示例】' }
+  return $mark
+}
+
+function Render-BriefOne {
+  param($r)
+  $lines = New-Object System.Collections.ArrayList
+  [void]$lines.Add('==== Skill: ' + $r.path + ' ====')
+  [void]$lines.Add('▸ analysis_status: ' + $r.analysis_status)
+  $bsText = if (@($r.behavior_summary).Count -gt 0) { @($r.behavior_summary) -join '、' } else { '未发现明显风险行为' }
+  [void]$lines.Add('▸ 行为概要: ' + $bsText)
+  [void]$lines.Add('▸ 风险摘要: ' + (Get-BriefRiskSummary $r))
+  [void]$lines.Add('▸ 最坏情况 TOP 3:')
+  if (@($r.top3).Count -eq 0) { [void]$lines.Add('  （无）') }
+  else {
+    foreach ($f in @($r.top3)) {
+      $inf = Get-InferenceText $f.id
+      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6} → {7}' -f (Get-BriefSeverity $f.severity), $f.id, (Get-RuleDesc $f.id), $f.file, $f.line, (Get-BriefMarks $f), $f.confidence, $inf))
+      [void]$lines.Add(('    证据: ' + $f.text))
+    }
+  }
+  [void]$lines.Add('▸ 关联发现:')
+  if (@($r.correlation_findings).Count -eq 0) { [void]$lines.Add('  （无）') }
+  else {
+    foreach ($cf in @($r.correlation_findings)) {
+      [void]$lines.Add(('  • [{0}] {1} {2}' -f (Get-BriefSeverity $cf.severity), $cf.id, (Get-RuleDesc $cf.id)))
+      [void]$lines.Add(('    结论: ' + $cf.text))
+      $srcIds = @($cf.source_finding_id)
+      if ($srcIds.Count -gt 0) { [void]$lines.Add(('    源发现: ' + ($srcIds -join ', '))) }
+    }
+  }
+  [void]$lines.Add('▸ 详细发现:')
+  $risk = @($r.findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' })
+  if ($risk.Count -eq 0) { [void]$lines.Add('  （无）') }
+  else {
+    foreach ($f in $risk) {
+      $inf = Get-InferenceText $f.id
+      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5} 置信度 {6}' -f (Get-BriefSeverity $f.severity), $f.id, (Get-RuleDesc $f.id), $f.file, $f.line, (Get-BriefMarks $f), $f.confidence))
+      [void]$lines.Add(('    事实: ' + $f.text))
+      if ($inf) { [void]$lines.Add(('    推断: ' + $inf)) }
+    }
+  }
+  [void]$lines.Add('▸ 参考发现（不计入风险）:')
+  if (@($r.reference_findings).Count -eq 0) { [void]$lines.Add('  （无）') }
+  else {
+    foreach ($f in @($r.reference_findings | Select-Object -First 20)) {
+      [void]$lines.Add(('  • [{0}] {1} {2}:{3} [{4}] {5}' -f (Get-BriefSeverity $f.severity), $f.id, $f.file, $f.line, $f.context, $f.text))
+    }
+  }
+  [void]$lines.Add('▸ 依赖与文件发现:')
+  if (@($r.dependency_findings).Count -eq 0 -and @($r.skipped).Count -eq 0) { [void]$lines.Add('  （无）') }
+  else {
+    foreach ($df in @($r.dependency_findings)) {
+      [void]$lines.Add(('  • [{0}] {1} {2} {3}:{4} {5}' -f (Get-BriefSeverity $df.severity), $df.id, (Get-RuleDesc $df.id), $df.file, $df.line, $df.text))
+    }
+    foreach ($s in @($r.skipped)) {
+      [void]$lines.Add(('  • [skip] ' + $s.file + ': ' + $s.reason))
+    }
+  }
+  [void]$lines.Add('▸ 已审状态: ' + (Get-VerificationText $r.verification))
+  if ($Score) {
+    [void]$lines.Add(('▸ 自动评分（推断指标，不代表放行/拒绝）: score=' + $r.score + ' / ' + $r.severity))
+  }
+  return $lines
+}
+
 # ---------- 主流程 ----------
-# 规则维护命令优先处理（不需要扫描目标）
-if ($UpdateRules) {
+# 参数校验
+if ($Score -and -not $Brief) {
+  [Console]::Error.WriteLine('错误: -Score 仅在 -Brief 模式下有效')
+  exit 2
+}
+if ($MarkVerified) {
+  if (-not $Path) {
+    [Console]::Error.WriteLine('错误: -MarkVerified 必须与 -Path <skill> 配对使用')
+    exit 2
+  }
+  if ($Brief -or $Score -or $Json -or $Output -or $Interactive) {
+    [Console]::Error.WriteLine('错误: -MarkVerified 不能与 -Brief/-Score/-Json/-Output/-Interactive 同时使用')
+    exit 2
+  }
   try {
-    Update-RulesFromSource $UpdateRules
-    [void](Get-LoadedRules)
+    Invoke-MarkVerified $MarkVerified
+    exit 0
   } catch {
     [Console]::Error.WriteLine('错误: ' + $_.Exception.Message)
     exit 2
   }
-  exit 0
 }
-if ($ShowRules) {
-  Show-RulesInfo
-  exit 0
-}
-if ($ExportRules) {
-  $exp = [ordered]@{
-    version = $rulesMeta.version
-    updated = (Get-Date -Format 'yyyy-MM-dd')
-    source  = $rulesMeta.source
-    linePatterns = @($linePatterns | ForEach-Object { [ordered]@{ id = $_.id; severity = $_.sev; regex = $_.re; score = if ($_.PSObject.Properties['score']) { [bool]$_.score } else { $true }; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } } })
-    multiPatterns = @($multiPatterns | ForEach-Object { [ordered]@{ id = $_.id; severity = $_.sev; regex = $_.re; owasp = if ($_.PSObject.Properties['owasp']) { [string]$_.owasp } else { '' } } })
-    descMap = $descMap
-  }
-  $dir = Split-Path $ExportRules -Parent
-  if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  [System.IO.File]::WriteAllText($ExportRules, ($exp | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
-  Write-Output ('规则已导出: ' + (Resolve-Path -LiteralPath $ExportRules).Path)
-  exit 0
-}
-if ($RuleId) {
-  if (-not $Regex) {
-    [Console]::Error.WriteLine('错误: 收录规则需要同时提供 -RuleId 和 -Regex')
-    exit 2
-  }
-  try {
-    Add-RuleEntry
-  } catch {
-    [Console]::Error.WriteLine('错误: ' + $_.Exception.Message)
-    exit 2
-  }
-  exit 0
-}
+if ($Interactive -and $Parallel) { $Interactive = $false }
 
 try {
   $targets = Get-Targets
@@ -1348,6 +1933,7 @@ if ($InitBaseline) {
 }
 
 $outLines = New-Object System.Collections.ArrayList
+if (-not $Brief) {
 foreach ($r in $reports) {
   [void]$outLines.Add('==== 目标: ' + $r.path + ' ====')
   $eff = @($r.findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) })
@@ -1431,6 +2017,36 @@ if ($reports.Count -gt 1) {
   }
 }
 [void]$outLines.Add('==== 扫描完成 ====')
+} else {
+  # ===== 简报模式输出 =====
+  if ($reports.Count -eq 1) {
+    foreach ($l in @(Render-BriefOne $reports[0])) { [void]$outLines.Add($l) }
+  } else {
+    $n = 0
+    foreach ($r in $reports) {
+      $n++
+      [void]$outLines.Add(('[{0}] {1} | status={2} | {3} | {4}' -f $n, $r.path, $r.analysis_status, (Get-BriefRiskSummary $r), (Get-VerificationText $r.verification)))
+    }
+    if ($Interactive) { [void]$outLines.Add('输入序号查看详情，all 全部展开，q 退出') }
+  }
+  [void]$outLines.Add('==== 扫描完成 ====')
+}
+
+# 简报交互模式：多目标总览后按序号查看（单目标忽略；与 -Parallel 同用已在参数校验阶段关闭）
+if ($Brief -and $Interactive -and -not $Json -and $reports.Count -gt 1) {
+  while ($true) {
+    $sel = Read-Host '选择序号（all 全部 / q 退出）'
+    if ($sel -eq 'q') { break }
+    if ($sel -eq 'all') {
+      foreach ($r in $reports) { foreach ($l in @(Render-BriefOne $r)) { Write-Output $l } }
+    } elseif ($sel -match '^\d+$') {
+      $idx = [int]$sel
+      if ($idx -ge 1 -and $idx -le $reports.Count) {
+        foreach ($l in @(Render-BriefOne $reports[$idx - 1])) { Write-Output $l }
+      } else { Write-Output ('序号无效: ' + $sel) }
+    } else { Write-Output ('输入无效: ' + $sel) }
+  }
+}
 
 if ($Json) {
   $jsonObj = [ordered]@{
