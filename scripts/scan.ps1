@@ -119,8 +119,8 @@ $selfCoreFiles = @(
 # __SELF_HASHES_BEGIN__
 # 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
 $SelfHashes = @{
-  'SKILL.md' = '4D63BE53F5CA8E1EC56E2C2F271F9369C04F8C7F0E893262FAF7A86DF74E8B5B'
-  'README.md' = '29AE113DF9E39AF6C414CC1233BC12BC87367B5A095DEEE1F05EA236819C4645'
+  'SKILL.md' = 'B9C12AFDE624B8DCA08AF34BAAF5ECA954083E876F7A0E562855F599A05CF640'
+  'README.md' = 'E1BF4F2B6B36D9FD86447EE2B223F7D178F81C456D337F160945F6372354EA19'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
@@ -129,7 +129,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '978337829B0CBA3C974732460786ECFBC7BEEAFAF2935F999DFE8DFC7D0CC549'
+  'scripts/test.ps1' = '088846E275B856A33EB1F1661481D0CF43211FF2E8D36D0EA33504FFDA98C7D1'
 }
 # __SELF_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
@@ -668,8 +668,50 @@ function Get-SkillsRoot {
   return $null
 }
 
+function Test-SkillRoot {
+  # 轻量技能根检测：目录根存在 SKILL.md 即视为一个 skill（唯一审核单位）
+  param([string]$path)
+  return (Test-Path -LiteralPath (Join-Path $path 'SKILL.md') -PathType Leaf)
+}
+
+function Get-SkillNameFromMd {
+  # 读取 SKILL.md frontmatter 的 name 作为展示用技能名；缺失时回退目录名
+  param([string]$root)
+  $md = Join-Path $root 'SKILL.md'
+  if (Test-Path -LiteralPath $md -PathType Leaf) {
+    try {
+      $head = @(Get-Content -LiteralPath $md -TotalCount 40 -ErrorAction Stop)
+      $fm = $head -join "`n"
+      if ($fm -match '(?ms)^---\s*\r?\n(.*?)^---') {
+        $body = $matches[1]
+        if ($body -match '(?mi)^name:\s*(.+?)\s*$') { return $matches[1].Trim() }
+      }
+    } catch {}
+  }
+  return (Split-Path $root -Leaf)
+}
+
+function Find-SkillRoots {
+  # 在给定目录下查找技能根：先查一级子目录，未命中再查二级（仓库/分类目录/技能 布局）
+  param([string]$path)
+  $roots = New-Object System.Collections.ArrayList
+  $c1 = @(Get-ChildItem -Directory -Force -LiteralPath $path -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.Name.StartsWith('.') })
+  foreach ($d in $c1) { if (Test-SkillRoot $d.FullName) { [void]$roots.Add($d.FullName) } }
+  if ($roots.Count -eq 0) {
+    foreach ($d in $c1) {
+      foreach ($d2 in @(Get-ChildItem -Directory -Force -LiteralPath $d.FullName -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Name.StartsWith('.') })) {
+        if (Test-SkillRoot $d2.FullName) { [void]$roots.Add($d2.FullName) }
+      }
+    }
+  }
+  return @($roots | Sort-Object)
+}
+
 function Get-Targets {
   $list = @()
+  $script:PathScopeMode = 'none'
   $modes = 0
   if ($AllInstalled) { $modes++ }
   if ($Path) { $modes++ }
@@ -690,7 +732,36 @@ function Get-Targets {
     if ($list.Count -eq 0) { throw "目录下未发现技能文件夹或 zip: $dirResolved" }
   } elseif ($Path) {
     $resolved = @(Resolve-Path -LiteralPath $Path -ErrorAction Stop)
-    $list = @($resolved.Path)
+    $p = $resolved.Path
+    if (Test-Path -LiteralPath $p -PathType Container) {
+      if (Test-SkillRoot $p) {
+        $script:PathScopeMode = 'skill'
+        [Console]::Error.WriteLine('Skill root detected: ' + $p)
+        $list = @($p)
+      } else {
+        $nested = @(Find-SkillRoots $p)
+        if ($nested.Count -gt 0) {
+          if ($nested.Count -eq 1) {
+            $script:PathScopeMode = 'skill'
+            [Console]::Error.WriteLine('Skill root detected: ' + $nested[0])
+          } else {
+            $script:PathScopeMode = 'multi-skill'
+            [Console]::Error.WriteLine('Warning: This directory contains multiple skills. Security review works best with: one skill = one target.')
+            [Console]::Error.WriteLine('Detected skills:')
+            foreach ($s in $nested) { [Console]::Error.WriteLine('  * ' + (Split-Path $s -Leaf)) }
+            [Console]::Error.WriteLine('→ 已按“1 skill = 1 Target”拆分为 ' + $nested.Count + ' 个独立审核目标')
+          }
+          $list = @($nested)
+        } else {
+          $script:PathScopeMode = 'directory'
+          [Console]::Error.WriteLine('Warning: not recognized as isolated skill（未识别为独立技能，按单目录扫描）')
+          $list = @($p)
+        }
+      }
+    } else {
+      $script:PathScopeMode = 'file'
+      $list = @($p)
+    }
   } else {
     throw '请提供 -Path <技能目录|文件|zip>、-Dir <技能文件夹> 或使用 -AllInstalled'
   }
@@ -1337,8 +1408,16 @@ function Invoke-OsvCheck {
 
 function Invoke-ScanPath {
   param([string]$scanPath, [string]$displayPath)
+  $isSkill = Test-SkillRoot $scanPath
+  $targetType = 'file'
+  if ($isSkill) { $targetType = 'skill' }
+  elseif (Test-Path -LiteralPath $scanPath -PathType Container) { $targetType = 'directory' }
+  # 注意：不得命名为 $skillName——脚本级 $skillName 是技能 ID，动态作用域下会被此局部变量遮蔽，破坏 Get-SkillsRoot 定位
+  $skillDisplayName = ''
+  if ($isSkill) { $skillDisplayName = Get-SkillNameFromMd $scanPath }
   $result = [ordered]@{
-    path = $displayPath; root = $scanPath; score = 0; severity = 'LOW'; recommendation = '';
+    path = $displayPath; root = $scanPath; target_type = $targetType; skill_name = $skillDisplayName;
+    score = 0; severity = 'LOW'; recommendation = '';
     hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @();
     analysis_status = 'complete'; scan_files = @(); skip_reasons = @(); reference_findings = @();
     correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @();
@@ -1736,11 +1815,11 @@ function Invoke-TargetScan {
     try {
       Expand-SafeZip -zip $target -dest $tempDir -errors $errors
       if ($errors.Count -gt 0) {
-        return [ordered]@{ path = $target; root = $target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @($errors) }
+        return [ordered]@{ path = $target; root = $target; target_type = 'file'; skill_name = ''; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @($errors) }
       }
       $scanPath = $tempDir
     } catch {
-      return [ordered]@{ path = $target; root = $target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @($errors) }
+      return [ordered]@{ path = $target; root = $target; target_type = 'file'; skill_name = ''; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @($errors) }
     }
   }
   try {
@@ -2271,7 +2350,11 @@ function Get-BriefMarks {
 function Render-BriefOne {
   param($r)
   $lines = New-Object System.Collections.ArrayList
-  [void]$lines.Add('==== Skill: ' + $r.path + ' ====')
+  if ($r.skill_name) { [void]$lines.Add('==== Skill: ' + $r.skill_name + '（' + $r.path + '）====') }
+  else { [void]$lines.Add('==== Skill: ' + $r.path + ' ====') }
+  $tt = if ($r.target_type) { $r.target_type } else { 'unknown' }
+  [void]$lines.Add('▸ Target Type: ' + $tt)
+  if ($tt -ne 'skill') { [void]$lines.Add('▸ Warning: not recognized as isolated skill（未识别为独立技能）') }
   [void]$lines.Add('▸ analysis_status: ' + $r.analysis_status)
   if ($r.engines) {
     $offEng = @($r.engines.PSObject.Properties | Where-Object { $_.Value -notin @('on', 'available') } | ForEach-Object { $_.Name + '=' + $_.Value })
@@ -2371,6 +2454,21 @@ try {
   [Console]::Error.WriteLine('错误: ' + $_.Exception.Message)
   exit 2
 }
+# -Path 命中多技能集合且显式 -Interactive 时，先让用户选择要审核的技能（非交互模式自动全扫）
+if ($script:PathScopeMode -eq 'multi-skill' -and $Interactive -and -not $Json -and -not $Worker -and @($targets).Count -gt 1) {
+  Write-Host '检测到多个技能，选择要审核的目标：'
+  for ($i = 0; $i -lt $targets.Count; $i++) {
+    Write-Host ('  [{0}] {1}' -f ($i + 1), (Split-Path $targets[$i] -Leaf))
+  }
+  $sel = Read-Host '选择序号（逗号分隔可多选 / a 全部 / q 退出）'
+  if ($sel -eq 'q') { exit 0 }
+  if ($sel -ne 'a') {
+    $idx = @($sel -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+    if ($idx.Count -gt 0) {
+      $targets = @($idx | Where-Object { $_ -ge 1 -and $_ -le $targets.Count } | ForEach-Object { $targets[$_ - 1] } | Select-Object -Unique)
+    }
+  }
+}
 $reports = New-Object System.Collections.ArrayList
 $hadError = $false
 $global:baselineFp = @{}
@@ -2429,8 +2527,14 @@ if ($InitBaseline) {
 
 $outLines = New-Object System.Collections.ArrayList
 if (-not $Brief) {
+if ($AllInstalled) { [void]$outLines.Add('==== Installed Skills Audit ====') }
 foreach ($r in $reports) {
   [void]$outLines.Add('==== 目标: ' + $r.path + ' ====')
+  $tt = if ($r.target_type) { $r.target_type } else { 'unknown' }
+  [void]$outLines.Add(('Target Type: ' + $tt))
+  if ($r.skill_name) { [void]$outLines.Add(('Skill: ' + $r.skill_name)) }
+  [void]$outLines.Add(('Path: ' + $r.path))
+  if ($tt -ne 'skill') { [void]$outLines.Add('Warning: not recognized as isolated skill（未识别为独立技能）') }
   $eff = @($r.findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) })
   $docCount = @($r.findings | Where-Object { $_.doc }).Count
   $suppCount = @($r.suppressed).Count
@@ -2509,6 +2613,7 @@ foreach ($r in $reports) {
 
 if ($reports.Count -gt 1) {
   [void]$outLines.Add('==== 批量汇总（按 score 降序）====')
+  $mark = if ($AllInstalled) { '✓ ' } else { '' }
   foreach ($r in @($reports | Sort-Object -Property { $_.score } -Descending)) {
     $eff = @($r.findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) }).Count
     $sc = $r.severityCounts
@@ -2517,8 +2622,9 @@ if ($reports.Count -gt 1) {
     $scM = if ($sc) { [int]$sc.MEDIUM } else { 0 }
     $scL = if ($sc) { [int]$sc.LOW } else { 0 }
     $top1 = if ($r.topCategories -and @($r.topCategories).Count -gt 0) { @($r.topCategories)[0] } else { '-' }
-    [void]$outLines.Add(('{0} | {1} | {2} | {3} | 有效 {4} | C{5}/H{6}/M{7}/L{8} | 重点 {9} | 跳过 {10}' -f `
-      $r.path, $r.score, $r.severity, $r.recommendation, $eff, $scC, $scH, $scM, $scL, $top1, $r.skipped.Count))
+    $sn = if ($r.skill_name) { $r.skill_name } else { $r.path }
+    [void]$outLines.Add(($mark + '{0} | {1} | {2} | {3} | 有效 {4} | C{5}/H{6}/M{7}/L{8} | 重点 {9} | 跳过 {10}' -f `
+      $sn, $r.score, $r.severity, $r.recommendation, $eff, $scC, $scH, $scM, $scL, $top1, $r.skipped.Count))
   }
 }
 [void]$outLines.Add('==== 扫描完成 ====')
@@ -2530,7 +2636,9 @@ if ($reports.Count -gt 1) {
     $n = 0
     foreach ($r in $reports) {
       $n++
-      [void]$outLines.Add(('[{0}] {1} | status={2} | {3} | {4}' -f $n, $r.path, $r.analysis_status, (Get-BriefRiskSummary $r), (Get-VerificationText $r.verification)))
+      $sn = if ($r.skill_name) { $r.skill_name } else { '-' }
+      $tt = if ($r.target_type) { $r.target_type } else { 'unknown' }
+      [void]$outLines.Add(('[{0}] {1} | type={2} | skill={3} | status={4} | {5} | {6}' -f $n, $r.path, $tt, $sn, $r.analysis_status, (Get-BriefRiskSummary $r), (Get-VerificationText $r.verification)))
     }
     if ($Interactive) { [void]$outLines.Add('输入序号查看详情，all 全部展开，q 退出') }
   }

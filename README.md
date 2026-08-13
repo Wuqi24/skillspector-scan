@@ -4,7 +4,9 @@
 **Runtime skill ID**: `skillspector-scan`
 **Skill directory**: `skillspector-scan`
 
-离线静态安全审查工具：对本地 Codex 技能做只读扫描，识别提示注入、数据外泄、供应链、危险代码调用等 16+ 类风险，输出通俗安全报告。不安装、不运行目标技能的任何脚本；风险标签为自动推断，不替代人工裁决。
+**Audit AI agent skills individually.**
+
+离线静态安全审查工具：逐个审核本地 AI Agent 技能（Codex skill），识别提示注入、数据外泄、供应链、危险代码调用等 16+ 类风险，输出通俗安全报告。最小审核单位是**单个 skill**：一个 skill → 一个 Target → 一个 Scan Result → 一个审核决策。不安装、不运行目标技能的任何脚本；风险标签为自动推断，不替代人工裁决。
 
 ## 这是什么
 
@@ -20,6 +22,7 @@
 ## 特性
 
 - 全离线：唯一可联网项是可选 `-CheckCVE`（OSV.dev 查询，失败自动降级离线）
+- 技能粒度：skill 是最小审核单位；`-Path` 指向仓库/集合目录时自动识别技能根（SKILL.md）并按技能拆分，普通目录仍可扫描但标注“未识别为独立技能”
 - 静态只读：无沙箱、无自动拦截、无自动净化
 - 逐文件单次读取 + 专项多阶段检查 + 编码探测（UTF-8/UTF-16/GBK）+ 语境标注 + 注释词法识别
 - Python AST/轻量污点分析、JS 行为启发式、base64 载荷解码复查、符号链接越界检测、git 历史密钥检测、manifest 变化检测
@@ -44,6 +47,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 依赖：PowerShell 5.1+（建议 7）。Python 可选：用于 AST/污点分析，缺失时自动降级为正则并在报告标注；可用 `-Python <路径>` 指定，`-NoAst` 关闭。
 
 ## 使用
+
+**入口语义**：`-Path` 优先解释为单个技能（检测到 SKILL.md 即输出 `Target Type: skill`）；指向含多个技能的仓库/分类目录时自动拆分为多个独立技能 Target（附 Warning，`-Interactive` 可先选择）；普通目录仍可扫描，但标注 `not recognized as isolated skill`。`-Dir` = 扫描目录中的多个技能；`-AllInstalled` = 逐个审核所有已安装技能（推荐入口）。
 
 ```powershell
 # 基本扫描（文本报告；退出码 0 正常 / 1 有 >50 分目标 / 2 出错）

@@ -656,6 +656,79 @@ subprocess.run(os.environ["CMD"], shell=True)
   } finally {
     $env:PATH = $oldPath
   }
+
+  # 45) Scope：单技能 -Path → 1 个 skill Target，报告含 Target Type/Skill 块
+  $scopeSingle = Join-Path $tmp 'scope-single'
+  New-Item -ItemType Directory -Force -Path $scopeSingle | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scopeSingle 'SKILL.md') -Value "---`nname: scope-single`ndescription: t`n---`n# t"
+  $rs = Invoke-ScanJson $scopeSingle
+  $ovs = Join-Path $tmp 'scope-single.txt'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $scopeSingle -Output $ovs 2>$null
+  $tvs = Get-Content -Raw -Encoding UTF8 -LiteralPath $ovs -ErrorAction SilentlyContinue
+  if ($rs.Target.target_type -ne 'skill' -or $rs.Target.skill_name -ne 'scope-single' -or $tvs -notmatch 'Target Type: skill' -or $tvs -notmatch 'Skill: scope-single') {
+    Write-Host ("FAIL Scope 单技能: type=" + $rs.Target.target_type + " name=" + $rs.Target.skill_name); $fail++
+  } else { Write-Host 'OK Scope 单技能（-Path → 1 Target / skill / 报告含 Scope）' }
+
+  # 46) Scope：多技能目录 -Path → 自动拆分为多个独立技能 Target（不是一个大目录 Target）
+  $scopeMulti = Join-Path $tmp 'scope-multi'
+  New-Item -ItemType Directory -Force -Path (Join-Path $scopeMulti 'skill-a'),(Join-Path $scopeMulti 'skill-b') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scopeMulti 'skill-a\SKILL.md') -Value "---`nname: skill-a`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scopeMulti 'skill-b\SKILL.md') -Value "---`nname: skill-b`ndescription: t`n---`n# t"
+  $repS = Join-Path $tmp 'scope-multi.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $scopeMulti -Json -Output $repS 2>$null
+  $objS = Get-Content -Raw -Encoding UTF8 -LiteralPath $repS | ConvertFrom-Json
+  $namesS = @($objS.targets | ForEach-Object { $_.skill_name })
+  $typesS = @($objS.targets | ForEach-Object { $_.target_type })
+  $dirTarget = @($objS.targets | Where-Object { $_.target_type -eq 'directory' })
+  if ($objS.targets.Count -ne 2 -or $namesS -notcontains 'skill-a' -or $namesS -notcontains 'skill-b' -or $typesS -notcontains 'skill' -or $dirTarget.Count -gt 0) {
+    Write-Host ("FAIL Scope 多技能: n=" + $objS.targets.Count + " names=" + ($namesS -join ',') + " types=" + ($typesS -join ',')); $fail++
+  } else { Write-Host 'OK Scope 多技能目录（-Path 自动拆分为 2 个技能 Target）' }
+
+  # 47) Scope：-AllInstalled 每个技能独立输出 skill 名 / status / findings
+  $fakeHome3 = Join-Path $tmp 'fakehome3'
+  $fakeSkills3 = Join-Path $fakeHome3 'skills'
+  New-Item -ItemType Directory -Force -Path (Join-Path $fakeSkills3 'inst-a'),(Join-Path $fakeSkills3 'inst-b') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeSkills3 'inst-a\SKILL.md') -Value "---`nname: inst-a`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeSkills3 'inst-b\SKILL.md') -Value "---`nname: inst-b`ndescription: t`n---`n# t"
+  $oldHome3 = $env:CODEX_HOME
+  $env:CODEX_HOME = $fakeHome3
+  try {
+    $rep33 = Join-Path $tmp 'all33.json'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script -AllInstalled -Json -Output $rep33 2>$null
+    $obj33 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep33 | ConvertFrom-Json
+    $badT = @($obj33.targets | Where-Object { $_.target_type -ne 'skill' -or -not $_.skill_name -or $_.analysis_status -ne 'complete' })
+    if ($obj33.targets.Count -ne 2 -or $badT.Count -gt 0) {
+      Write-Host ("FAIL Scope AllInstalled: n=" + $obj33.targets.Count + " bad=" + $badT.Count); $fail++
+    } else { Write-Host 'OK Scope AllInstalled（每个技能独立 skill/status/findings）' }
+  } finally { $env:CODEX_HOME = $oldHome3 }
+
+  # 48) Scope 不改变 verified identity：MarkVerified 后重扫仍匹配既有已审记录
+  $scopeVerified = Join-Path $tmp 'scope-verified'
+  New-Item -ItemType Directory -Force -Path $scopeVerified | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scopeVerified 'SKILL.md') -Value "---`nname: scope-verified`ndescription: t`n---`n# t"
+  $oldHome4 = $env:CODEX_HOME
+  $env:CODEX_HOME = $fakeHome3
+  try {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Path $scopeVerified 2>$null | Out-Null
+    $rv = Invoke-BriefJson $scopeVerified
+    if ($rv.Target.verification.status -ne 'valid' -or $rv.Target.verification.decision -ne 'allow') {
+      Write-Host ("FAIL Scope verified 不回归: status=" + $rv.Target.verification.status + " decision=" + $rv.Target.verification.decision); $fail++
+    } else { Write-Host 'OK Scope verified 不回归（identity 不变，已审记录仍匹配）' }
+  } finally { $env:CODEX_HOME = $oldHome4 }
+
+  # 49) Scope：普通目录（无 SKILL.md）仍允许扫描，仅提示 not recognized as isolated skill
+  $scopePlain = Join-Path $tmp 'scope-plain'
+  New-Item -ItemType Directory -Force -Path $scopePlain | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scopePlain 'note.txt') -Value 'hello'
+  $repP = Join-Path $tmp 'scope-plain.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $scopePlain -Json -Output $repP 2>$null
+  $objP = Get-Content -Raw -Encoding UTF8 -LiteralPath $repP | ConvertFrom-Json
+  $txtP = Join-Path $tmp 'scope-plain.txt'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $scopePlain -Output $txtP 2>$null
+  $tP = Get-Content -Raw -Encoding UTF8 -LiteralPath $txtP -ErrorAction SilentlyContinue
+  if ($objP.targets.Count -ne 1 -or $objP.targets[0].target_type -ne 'directory' -or $tP -notmatch 'not recognized as isolated skill') {
+    Write-Host ("FAIL Scope 普通目录: n=" + $objP.targets.Count + " type=" + $objP.targets[0].target_type); $fail++
+  } else { Write-Host 'OK Scope 普通目录（可扫描 + Warning）' }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
