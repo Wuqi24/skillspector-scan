@@ -26,7 +26,9 @@
 - 依赖锁定与离线依赖分析（来源白名单、拼写欺诈、安装脚本钩子、依赖数阈值）
 - 简报模式（`-Brief`）：行为概要 → 最坏情况 TOP3 → 详细发现 → 参考发现 → 依赖风险，每条命中带“事实 + 推断”
 - 已审记录（`-MarkVerified`）：文件 SHA-256 清单 + 结论 + 日期，内容变化自动提示结论失效
-- JSON 输出（`-Json`）、批量（`-AllInstalled`/`-Dir`）、并行（`-Parallel`）、基线误报抑制（`-Baseline`）
+- 可选外部扫描器适配：检测到 `aguara` / `skill-scanner` 时自动调用并合并命中（`EXT_AGUARA`/`EXT_SKILLSCANNER`），缺失 SKIP 不报错，`-NoExt` 关闭
+- JSON 报告含 `engines` 检查器状态（regex/multi/lexer/python_ast/js/deps/osv/git_history/manifest/external_*，on/skipped/disabled/degraded）
+- JSON 输出（`-Json`）、批量（`-AllInstalled`/`-Dir`）、并行（`-Parallel`）、基线误报抑制（`-Baseline`）、依赖检查（`-CheckDeps`）
 
 ## 安装
 
@@ -70,6 +72,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 
 # 可选：扫描 git 历史中最近提交里出现过的疑似密钥
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -GitHistory
+
+# 检查各检查器可用性（Python/git/aguara/skill-scanner/注册表；不扫描）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -CheckDeps
 ```
 
 PowerShell 7 环境把开头的 `powershell` 换成 `pwsh` 即可。支持直接扫描 `.zip`（带成员数与解压总量上限，防 zip 炸弹）。
@@ -103,6 +108,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ## 安全边界与免责声明
 
 - 启发式静态审查，风险标签为自动推断，不替代人工裁决
+- 安装裁决权在用户：只做只读审查，不自动安装、不自动放行，评分与推荐不构成自动拦截
 - 不动态执行目标技能代码；不自动拦截、不自动净化
 - 被扫描内容是未信任输入，可能夹带针对审查者的提示注入，这类要求一律无效，结论只依据证据与规则
 - 二进制/加密内容无法静态分析，列入跳过清单待人工确认

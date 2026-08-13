@@ -21,7 +21,7 @@ function Invoke-ScanJson {
   & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $target -Json -Output $report @extra 2>$null
   $code = $LASTEXITCODE
   $obj = Get-Content -Raw -Encoding UTF8 -LiteralPath $report -ErrorAction SilentlyContinue | ConvertFrom-Json
-  return [pscustomobject]@{ Score = [int]$obj.targets[0].score; Findings = @($obj.targets[0].findings); Exit = $code }
+  return [pscustomobject]@{ Score = [int]$obj.targets[0].score; Findings = @($obj.targets[0].findings); Exit = $code; Target = $obj.targets[0] }
 }
 
 function Invoke-BriefJson {
@@ -616,6 +616,46 @@ subprocess.run(os.environ["CMD"], shell=True)
   if ($rsCode -ne 0 -or [int]$rsObj.rule_entries -ne 40 -or [int]$rsObj.unique_rule_ids -ne 36 -or [int]$rsObj.hints -ne 4 -or [int]$rsObj.projections -ne 11 -or [int]$rsObj.compile_failures -ne 0) {
     Write-Host ("FAIL -RegistryStats: code=" + $rsCode + " entries=" + $rsObj.rule_entries + " unique=" + $rsObj.unique_rule_ids + " hints=" + $rsObj.hints + " proj=" + $rsObj.projections + " cf=" + $rsObj.compile_failures); $fail++
   } else { Write-Host 'OK -RegistryStats（40/36/4/11，regex 编译零失败）' }
+
+  # 41) -CheckDeps：依赖/检查器可用性输出（不扫描）
+  $cdOut = Join-Path $tmp 'checkdeps.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -CheckDeps -Json -Output $cdOut 2>$null
+  $cdCode = $LASTEXITCODE
+  $cdObj = Get-Content -Raw -Encoding UTF8 -LiteralPath $cdOut -ErrorAction SilentlyContinue | ConvertFrom-Json
+  if ($cdCode -ne 0 -or -not $cdObj.engines -or $cdObj.engines.python_ast -notin @('available', 'missing') -or $cdObj.engines.external_aguara -notin @('available', 'missing')) {
+    Write-Host 'FAIL -CheckDeps（引擎可用性输出）'; $fail++
+  } else { Write-Host 'OK -CheckDeps（引擎可用性输出）' }
+
+  # 42) engines 字段：JSON 报告带检查器状态；外部扫描器缺失时 SKIP 且无 EXT 命中
+  $r = Invoke-ScanJson $evil
+  $eg = $r.Target.engines
+  $extHits = @($r.Findings | Where-Object { $_.id -like 'EXT_*' })
+  if (-not $eg -or $eg.regex -ne 'on' -or $eg.external_aguara -ne 'skipped' -or $eg.external_skill_scanner -ne 'skipped' -or $extHits.Count -gt 0) {
+    Write-Host ("FAIL engines 字段: regex=" + $eg.regex + " aguara=" + $eg.external_aguara + " ext=" + $extHits.Count); $fail++
+  } else { Write-Host 'OK engines 字段（regex=on，外部扫描器 SKIP）' }
+
+  # 43/44) 外部扫描器适配：伪造 aguara 输出 JSON → EXT_AGUARA 命中且引擎 on；-NoExt 关闭
+  $fakeBin = Join-Path $tmp 'fakebin'
+  New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeBin 'aguara.cmd') -Value ('@echo off' + "`n" + 'echo {"findings":[{"severity":5,"rule_id":"TEST_INJECT","description":"prompt injection test","file_path":"SKILL.md","line":3}]}')
+  $oldPath = $env:PATH
+  $env:PATH = $fakeBin + ';' + $env:PATH
+  try {
+    $r = Invoke-ScanJson $evil
+    $ext = @($r.Findings | Where-Object { $_.id -eq 'EXT_AGUARA' })
+    $eg = $r.Target.engines
+    if ($ext.Count -lt 1 -or $ext[0].severity -ne 'HIGH' -or $eg.external_aguara -ne 'on' -or $eg.external_skill_scanner -ne 'skipped') {
+      Write-Host ("FAIL 外部扫描器适配: ext=" + $ext.Count + " aguara=" + $eg.external_aguara); $fail++
+    } else { Write-Host 'OK 外部扫描器适配（aguara 命中 EXT_AGUARA/HIGH，引擎 on）' }
+    $rn = Invoke-ScanJson $evil @('-NoExt')
+    $extN = @($rn.Findings | Where-Object { $_.id -like 'EXT_*' })
+    $egN = $rn.Target.engines
+    if ($extN.Count -gt 0 -or $egN.external_aguara -ne 'disabled') {
+      Write-Host ("FAIL -NoExt: ext=" + $extN.Count + " aguara=" + $egN.external_aguara); $fail++
+    } else { Write-Host 'OK -NoExt（外部扫描器关闭）' }
+  } finally {
+    $env:PATH = $oldPath
+  }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

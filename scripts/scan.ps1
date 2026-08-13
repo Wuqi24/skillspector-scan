@@ -64,6 +64,10 @@
   重算核心文件 SHA-256 并刷新 scan.ps1 内自扫哈希常量块，然后退出
 .PARAMETER RegistryStats
   输出规则注册表统计（条目数/唯一 id/regex 编译校验）并退出
+.PARAMETER CheckDeps
+  输出各检查器可用性（Python/git/aguara/skill-scanner/注册表）并退出，不扫描
+.PARAMETER NoExt
+  关闭可选外部扫描器适配层（aguara / skill-scanner；默认自动探测，缺失则 SKIP）
 .PARAMETER MarkVerified
   显式写入已审记录：allow|deny，必须与 -Path 配对；禁止与简报/导出参数同用
 #>
@@ -92,6 +96,8 @@ param(
   [switch]$SelfDev,
   [switch]$RebakeSelfHashes,
   [switch]$RegistryStats,
+  [switch]$CheckDeps,
+  [switch]$NoExt,
   [ValidateSet('allow', 'deny')][string]$MarkVerified
 )
 
@@ -100,7 +106,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $skillName = 'skillspector-scan'
-$scannerVersion = '2.2.0'
+$scannerVersion = '2.3.0'
 $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
 # 自扫豁免哨兵：随脚本分发；修改脚本无需更新此常量，改名目录/复制公开文件无法伪造完整扫描器
 $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
@@ -113,8 +119,8 @@ $selfCoreFiles = @(
 # __SELF_HASHES_BEGIN__
 # 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
 $SelfHashes = @{
-  'SKILL.md' = '4287F046A694FA4DEEB631FF44DA4155A686F876B37C821C39D7B823027941E3'
-  'README.md' = '6FC1E6B9EBE93B274A1022DA58ADC420C0E067A69FB6E6F203A61CC902832148'
+  'SKILL.md' = '4D63BE53F5CA8E1EC56E2C2F271F9369C04F8C7F0E893262FAF7A86DF74E8B5B'
+  'README.md' = '29AE113DF9E39AF6C414CC1233BC12BC87367B5A095DEEE1F05EA236819C4645'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
@@ -123,7 +129,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '5B303FEC0A808C2D99CD768399E5A5DB48DF1DDB18A104AACBE8589FB40A4222'
+  'scripts/test.ps1' = '978337829B0CBA3C974732460786ECFBC7BEEAFAF2935F999DFE8DFC7D0CC549'
 }
 # __SELF_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
@@ -204,6 +210,8 @@ $engineMap = @{
   AGENT_MEMORY_FILE = @{ desc = '访问 AI 身份/记忆文件'; owasp = 'AST03' }
   INTERNAL_NET_CALL = @{ desc = '向内网地址发起网络调用'; owasp = 'AST06' }
   OBFUSCATION       = @{ desc = '混淆代码（极长单行）'; owasp = 'AST04' }
+  EXT_AGUARA        = @{ desc = '外部扫描器 aguara 命中（提示注入/混淆/可疑 LLM 调用）'; owasp = 'AST01' }
+  EXT_SKILLSCANNER  = @{ desc = '外部扫描器 skill-scanner 命中（已知恶意模式/CVE）'; owasp = 'AST02' }
 }
 
 # ---------- 规则注册表（冻结版，非毒库） ----------
@@ -474,6 +482,130 @@ function Write-RegistryStats {
     Write-Output ('注册表统计已写入: ' + $Output)
   } else {
     Write-Output $content
+  }
+}
+
+function Get-ExternalScannerExe {
+  # 探测外部扫描器可执行文件（aguara / skill-scanner），缺失返回 $null
+  param([string]$Name)
+  $g = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($g) { return $g.Source }
+  return $null
+}
+
+function Get-GitExe {
+  # 定位 git：PATH 优先，回退 Codex 内置运行时
+  $g = Get-Command git -ErrorAction SilentlyContinue
+  if ($g) { return $g.Source }
+  $bundled = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe'
+  if (Test-Path -LiteralPath $bundled) { return $bundled }
+  return $null
+}
+
+function Invoke-ExternalScanners {
+  # 可选外部扫描器适配层（借鉴 skill-vetter 的多扫描器编排）：自动探测 aguara / skill-scanner，
+  # 调用后把命中归一化为 EXT_AGUARA / EXT_SKILLSCANNER 发现并参与计分；缺失 → SKIP，不报错；
+  # 输出解析失败 → degraded + 错误条目。-NoExt 关闭本适配层。
+  param([string]$root, [System.Collections.ArrayList]$errors, [hashtable]$engines)
+  $out = New-Object System.Collections.ArrayList
+  if ($NoExt) {
+    $engines['external_aguara'] = 'disabled'
+    $engines['external_skill_scanner'] = 'disabled'
+    return $out
+  }
+  $aguara = Get-ExternalScannerExe 'aguara'
+  $skillScanner = Get-ExternalScannerExe 'skill-scanner'
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if ($aguara) {
+      $engines['external_aguara'] = 'running'
+      $raw = & $aguara scan $root --format json 2>$null
+      $code = $LASTEXITCODE
+      $text = @($raw) -join ''
+      try {
+        $obj = $text | ConvertFrom-Json
+        foreach ($fd in @($obj.findings)) {
+          $sevNum = 0
+          try { $sevNum = [double]$fd.severity } catch {}
+          if ($sevNum -lt 3) { continue }
+          $sev = if ($sevNum -ge 4) { 'HIGH' } else { 'MEDIUM' }
+          $fp = [string]$fd.file_path
+          if ($fp -and -not [System.IO.Path]::IsPathRooted($fp)) { $fp = Join-Path $root $fp }
+          if (-not $fp) { $fp = $root }
+          $ln = 0
+          try { $ln = [int]$fd.line } catch {}
+          [void]$out.Add((New-Finding -id 'EXT_AGUARA' -severity $sev -file $fp -line $ln -text (('aguara[' + $fd.rule_id + '] ' + $fd.description)) -context 'code' -doc $false -confidence 'medium'))
+        }
+        $engines['external_aguara'] = if ($code -ne 0) { 'degraded' } else { 'on' }
+      } catch {
+        $engines['external_aguara'] = 'degraded'
+        [void]$errors.Add('aguara 输出解析失败（退出码 ' + $code + '），其发现未纳入')
+      }
+    } else {
+      $engines['external_aguara'] = 'skipped'
+    }
+    if ($skillScanner) {
+      $engines['external_skill_scanner'] = 'running'
+      $raw2 = & $skillScanner scan $root --format json 2>$null
+      $code2 = $LASTEXITCODE
+      $text2 = @($raw2) -join ''
+      try {
+        $obj2 = $text2 | ConvertFrom-Json
+        $items = @()
+        if ($obj2.PSObject.Properties['findings'] -and @($obj2.findings).Count -gt 0) { $items = @($obj2.findings) }
+        elseif ($obj2) { $items = @($obj2) }
+        foreach ($fd in $items) {
+          $sevStr = ([string]$fd.severity).ToLower()
+          if ($sevStr -in @('low', 'none', 'unknown', '')) { continue }
+          $sev = switch ($sevStr) {
+            'critical' { 'HIGH' }; 'high' { 'HIGH' }; 'medium' { 'MEDIUM' }; default { 'LOW' }
+          }
+          $fp2 = [string]$fd.file
+          if ($fp2 -and -not [System.IO.Path]::IsPathRooted($fp2)) { $fp2 = Join-Path $root $fp2 }
+          if (-not $fp2) { $fp2 = $root }
+          $ln2 = 0
+          try { $ln2 = [int]$fd.line } catch {}
+          $desc = [string]$fd.description
+          if (-not $desc) { $desc = 'skill-scanner 命中（' + $sevStr + '）' }
+          [void]$out.Add((New-Finding -id 'EXT_SKILLSCANNER' -severity $sev -file $fp2 -line $ln2 -text $desc -context 'code' -doc $false -confidence 'medium'))
+        }
+        $engines['external_skill_scanner'] = if ($code2 -ne 0) { 'degraded' } else { 'on' }
+      } catch {
+        $engines['external_skill_scanner'] = 'degraded'
+        [void]$errors.Add('skill-scanner 输出解析失败（退出码 ' + $code2 + '），其发现未纳入')
+      }
+    } else {
+      $engines['external_skill_scanner'] = 'skipped'
+    }
+  } catch {
+    [void]$errors.Add('外部扫描器调用失败: ' + $_.Exception.Message)
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  return $out
+}
+
+function Write-CheckDeps {
+  # -CheckDeps：输出各检查器可用性（引擎状态透明化；不联网、不扫描）
+  $eng = [ordered]@{
+    python_ast = if (Get-PythonExe) { 'available' } else { 'missing' }
+    git_history = if (Get-GitExe) { 'available' } else { 'missing' }
+    external_aguara = if (Get-ExternalScannerExe 'aguara') { 'available' } else { 'missing' }
+    external_skill_scanner = if (Get-ExternalScannerExe 'skill-scanner') { 'available' } else { 'missing' }
+    registry = 'loaded (' + [string]$registry.rules_version + ')'
+  }
+  if ($Json) {
+    $content = ([ordered]@{ version = 1; scanner = $scannerVersion; engines = $eng } | ConvertTo-Json -Compress)
+    if ($Output) {
+      [System.IO.File]::WriteAllText($Output, $content, (New-Object System.Text.UTF8Encoding($false)))
+      Write-Output ('依赖检查已写入: ' + $Output)
+    } else {
+      Write-Output $content
+    }
+  } else {
+    Write-Output ('PowerShell ' + $PSVersionTable.PSVersion.ToString())
+    foreach ($k in @($eng.Keys)) { Write-Output (('  {0}: {1}' -f $k, $eng[$k])) }
   }
 }
 
@@ -1052,17 +1184,13 @@ function Get-GitHistoryFindings {
   param([string]$root, [System.Collections.ArrayList]$errors)
   $out = New-Object System.Collections.ArrayList
   if (-not $GitHistory) { return $out }
-  $git = Get-Command git -ErrorAction SilentlyContinue
-  if (-not $git) {
-    $bundled = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe'
-    if (Test-Path -LiteralPath $bundled) { $git = [pscustomobject]@{ Source = $bundled } }
-  }
+  $git = Get-GitExe
   if (-not $git) { [void]$errors.Add('未找到 git，git 历史扫描已跳过'); return $out }
   if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) { return $out }
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $lines = & $git.Source -C $root log --all -p -n $GitDepth 2>$null
+    $lines = & $git -C $root log --all -p -n $GitDepth 2>$null
     $secRe = 'sk-[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN[^-]+PRIVATE\s+KEY-----|xox[baprs]-[A-Za-z0-9\-]{20,}'
     $seenSecret = @{}
     foreach ($line in $lines) {
@@ -1138,13 +1266,14 @@ function Invoke-ParallelScans {
             severityCounts = $r.severityCounts; topCategories = @($r.topCategories); topFindings = @($r.topFindings);
             analysis_status = $r.analysis_status; reference_findings = @($r.reference_findings);
             correlation_findings = @($r.correlation_findings); dependency_findings = @($r.dependency_findings);
-            behavior_summary = @($r.behavior_summary); top3 = @($r.top3); verification = $r.verification
+            behavior_summary = @($r.behavior_summary); top3 = @($r.top3); verification = $r.verification;
+            engines = $r.engines
           })
         } catch {
-          [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务输出解析失败: ' + $_.Exception.Message); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' } })
+          [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务输出解析失败: ' + $_.Exception.Message); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' }; engines = [pscustomobject]@{} })
         }
       } else {
-        [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务无输出（可能启动失败）'); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' } })
+        [void]$results.Add([pscustomobject]@{ path = $d.target; root = $d.target; score = 0; severity = 'LOW'; recommendation = '扫描失败'; hasExecutable = $false; findings = @(); suppressed = @(); dependencies = @(); skipped = @(); errors = @('并行任务无输出（可能启动失败）'); analysis_status = 'partial'; reference_findings = @(); correlation_findings = @(); dependency_findings = @(); behavior_summary = @(); top3 = @(); verification = [pscustomobject]@{ status = 'none'; decision = ''; date = '' }; engines = [pscustomobject]@{} })
       }
       if ($queue.Count -gt 0) {
         $t2 = $queue.Dequeue()
@@ -1229,8 +1358,14 @@ function Invoke-ScanPath {
   if ($global:baselineFp) { $baselineFp = $global:baselineFp }
   $fileStatus = @{}
   $skipReasons = @{}
+  $engines = @{
+    regex = 'on'; multi = 'on'; lexer = 'skipped'; python_ast = 'skipped'; js = 'skipped'; deps = 'on';
+    osv = 'skipped'; git_history = 'skipped'; manifest = 'on';
+    external_aguara = 'skipped'; external_skill_scanner = 'skipped'
+  }
 
   $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
+  $isContainer = $item.PSIsContainer
   if ($item.PSIsContainer) {
     $allFiles = @(Get-ItemsSafe $root -errors $errors | Where-Object { $_.FullName -notmatch '\\\.git\\' })
   } else {
@@ -1292,17 +1427,21 @@ function Invoke-ScanPath {
   # 简报模式：注释词法分析（code 文件）
   $commentMap = @{}
   if ($briefMode) {
+    $engines['lexer'] = 'skipped'
     $lexExts = @('.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.ps1','.psm1','.psd1','.sh','.bash','.zsh','.rb','.pl','.lua','.html','.htm','.xml','.svg')
     $lexFiles = @($scanFiles | Where-Object { $_.Extension.ToLower() -in $lexExts } | Select-Object -ExpandProperty FullName)
     if ($lexFiles.Count -gt 0) {
       $py = Get-PythonExe
       if ($py) {
+        $engines['lexer'] = 'running'
         $lexRaw = @(& $py -X utf8 $lexerScript @lexFiles 2>$null) -join ''
         if ($lexRaw) {
           try {
             $lexObj = $lexRaw | ConvertFrom-Json
             foreach ($prop in $lexObj.files.PSObject.Properties) { $commentMap[$prop.Name] = $prop.Value }
+            $engines['lexer'] = 'on'
           } catch {
+            $engines['lexer'] = 'degraded'
             [void]$errors.Add('注释词法分析输出解析失败: ' + $_.Exception.Message)
           }
         }
@@ -1439,19 +1578,40 @@ function Invoke-ScanPath {
   # Python AST（发现 .py 文件且 Python 可用时自动执行）
   $codeFiles = @($scanFiles | Where-Object { $_.Extension.ToLower() -in @('.py', '.js', '.mjs', '.cjs') } | Select-Object -ExpandProperty FullName)
   if (-not $NoAst -and $codeFiles.Count -gt 0) {
+    $engines['python_ast'] = 'running'
     $astRes = Invoke-AstCheck -pyFiles $codeFiles -errors $errors
     foreach ($af in @($astRes.Findings)) { [void]$findings.Add($af) }
     foreach ($sf in @($astRes.SkippedFiles)) { $fileStatus[$sf] = 'partial' }
+    $engines['python_ast'] = if (@($astRes.SkippedFiles).Count -gt 0) { 'degraded' } else { 'on' }
+  } else {
+    $engines['python_ast'] = if ($NoAst) { 'disabled' } else { 'skipped' }
   }
+  $engines['js'] = if ($NoAst -or -not (Get-PythonExe)) { 'skipped' }
+    elseif (@($codeFiles | Where-Object { $_ -match '(?i)\.(js|mjs|cjs)$' }).Count -eq 0) { 'skipped' }
+    else { 'on' }
 
   # OSV 已知漏洞查询
+  $osvErrBefore = @($errors).Count
   foreach ($of in @(Invoke-OsvCheck -cveCandidates $cveCandidates -errors $errors)) { [void]$findings.Add($of) }
+  $engines['osv'] = if (-not $CheckCVE) { 'skipped' } elseif ($cveCandidates.Count -eq 0) { 'skipped' }
+    elseif (@($errors).Count -gt $osvErrBefore) { 'degraded' } else { 'on' }
 
   # manifest 变化检测（需基线）
   foreach ($mf2 in @(Get-ManifestChangeFindings $root)) { [void]$findings.Add($mf2) }
 
   # git 历史敏感信息（可选）
+  $gitErrBefore = @($errors).Count
   foreach ($gf in @(Get-GitHistoryFindings $root $errors)) { [void]$findings.Add($gf) }
+  $engines['git_history'] = if (-not $GitHistory) { 'skipped' } elseif (-not (Get-GitExe)) { 'skipped' }
+    elseif (@($errors).Count -gt $gitErrBefore) { 'degraded' } else { 'on' }
+
+  # 可选外部扫描器适配层（仅目录目标；aguara / skill-scanner 自动探测，缺失 SKIP）
+  if ($isContainer) {
+    foreach ($ef in @(Invoke-ExternalScanners -root $root -errors $errors -engines $engines)) { [void]$findings.Add($ef) }
+  } else {
+    $engines['external_aguara'] = 'skipped'
+    $engines['external_skill_scanner'] = 'skipped'
+  }
 
   # 去重（id + 文件 + 行）：同键保留“非 doc 优先，其次高置信”
   $seen = @{}
@@ -1548,6 +1708,12 @@ function Invoke-ScanPath {
   $result.skip_reasons = $skipReasons
   $result.analysis_status = if (@($fileStatus.Values | Where-Object { $_ -eq 'failed' }).Count -gt 0) { 'failed' } elseif (@($fileStatus.Values | Where-Object { $_ -eq 'partial' }).Count -gt 0) { 'partial' } else { 'complete' }
   $result.rules = [pscustomobject]@{ version = $registry.rules_version; schema = $registry.schema_version; scanner = $scannerVersion }
+  $result.engines = [pscustomobject]@{
+    regex = $engines['regex']; multi = $engines['multi']; lexer = $engines['lexer']
+    python_ast = $engines['python_ast']; js = $engines['js']; deps = $engines['deps']
+    osv = $engines['osv']; git_history = $engines['git_history']; manifest = $engines['manifest']
+    external_aguara = $engines['external_aguara']; external_skill_scanner = $engines['external_skill_scanner']
+  }
   if ($briefMode) {
     $result.reference_findings = @($findings | Where-Object { $_.doc })
     $result.correlation_findings = @($findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })
@@ -2107,6 +2273,10 @@ function Render-BriefOne {
   $lines = New-Object System.Collections.ArrayList
   [void]$lines.Add('==== Skill: ' + $r.path + ' ====')
   [void]$lines.Add('▸ analysis_status: ' + $r.analysis_status)
+  if ($r.engines) {
+    $offEng = @($r.engines.PSObject.Properties | Where-Object { $_.Value -notin @('on', 'available') } | ForEach-Object { $_.Name + '=' + $_.Value })
+    if ($offEng.Count -gt 0) { [void]$lines.Add('▸ 检查器状态: ' + ($offEng -join '、')) }
+  }
   $bsText = if (@($r.behavior_summary).Count -gt 0) { @($r.behavior_summary) -join '、' } else { '未发现明显风险行为' }
   [void]$lines.Add('▸ 行为概要: ' + $bsText)
   [void]$lines.Add('▸ 风险摘要: ' + (Get-BriefRiskSummary $r))
@@ -2192,6 +2362,7 @@ if ($MarkVerified) {
     exit 2
   }
 }
+if ($CheckDeps) { Write-CheckDeps; exit 0 }
 if ($Interactive -and $Parallel) { $Interactive = $false }
 
 try {
@@ -2288,6 +2459,9 @@ foreach ($r in $reports) {
     foreach ($e in $r.errors) { [void]$outLines.Add(('[ERR] ' + $e)) }
     [void]$outLines.Add(('==== 小结: score={0} / {1}（{2}）| 有效 {3} | 文档语境 {4} | 基线抑制 {5} | 跳过 {6} | 错误 {7} ====' -f `
       $r.score, $r.severity, $r.recommendation, $eff.Count, $docCount, $suppCount, $r.skipped.Count, $r.errors.Count))
+    if ($r.engines) {
+      [void]$outLines.Add(('==== 检查器: ' + (@($r.engines.PSObject.Properties | ForEach-Object { $_.Name + '=' + $_.Value }) -join ' / ')))
+    }
   } else {
     [void]$outLines.Add(('▸ 结论: score={0} / {1}（{2}）| 有效 {3}（CRITICAL {4} / HIGH {5} / MED {6} / LOW {7}）' -f `
       $r.score, $r.severity, $r.recommendation, $eff.Count, $scC, $scH, $scM, $scL))
@@ -2316,6 +2490,10 @@ foreach ($r in $reports) {
       }
     }
     [void]$outLines.Add(('▸ 需人工确认: 文档语境 {0} · 跳过 {1} · 分析器错误 {2} · 基线抑制 {3}' -f $docCount, $r.skipped.Count, $r.errors.Count, $suppCount))
+    if ($r.engines) {
+      $offEng = @($r.engines.PSObject.Properties | Where-Object { $_.Value -notin @('on', 'available') } | ForEach-Object { $_.Name + '=' + $_.Value })
+      if ($offEng.Count -gt 0) { [void]$outLines.Add(('▸ 检查器状态: ' + ($offEng -join '、'))) }
+    }
     if ($r.errors -and @($r.errors).Count -gt 0) {
       foreach ($e in @($r.errors)) { [void]$outLines.Add(('  [ERR] ' + $e)) }
     }
