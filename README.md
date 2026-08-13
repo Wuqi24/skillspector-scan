@@ -32,6 +32,7 @@
 
 ```powershell
 # 1. 克隆仓库后，把 skillspector-scan 目录放入 Codex 技能目录
+git clone https://github.com/Wuqi24/skill-inspector-ps.git
 Copy-Item -Recurse skillspector-scan "$HOME\.codex\skills\"
 
 # 2. 也可以直接作为独立脚本使用，不依赖 Codex
