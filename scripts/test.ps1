@@ -11,6 +11,9 @@ $script = Join-Path $PSScriptRoot 'scan.ps1'
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('skillspector-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $fail = 0
+# 测试确定性：清掉环境 CODEX_HOME，避免 Get-VerifiedDir 因外部 CODEX_HOME 写入别处导致 #16 等读取路径失配（结束恢复）
+$oldCodexHome = $env:CODEX_HOME
+$env:CODEX_HOME = $null
 
 function Invoke-ScanJson {
   param([string]$target, [string[]]$extra)
@@ -614,6 +617,7 @@ subprocess.run(os.environ["CMD"], shell=True)
     Write-Host ("FAIL -RegistryStats: code=" + $rsCode + " entries=" + $rsObj.rule_entries + " unique=" + $rsObj.unique_rule_ids + " hints=" + $rsObj.hints + " proj=" + $rsObj.projections + " cf=" + $rsObj.compile_failures); $fail++
   } else { Write-Host 'OK -RegistryStats（40/36/4/11，regex 编译零失败）' }
 } finally {
+  $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
