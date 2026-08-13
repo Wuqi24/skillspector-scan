@@ -1,8 +1,6 @@
-# skill-inspector-ps
+# skillspector-scan
 
-**Repository**: `skill-inspector-ps`
-**Runtime skill ID**: `skillspector-scan`
-**Skill directory**: `skillspector-scan`
+**Repository / Runtime skill ID**: `skillspector-scan`
 
 **Audit AI agent skills individually.**
 
@@ -36,11 +34,10 @@
 ## 安装
 
 ```powershell
-# 1. 克隆仓库后，把 skillspector-scan 目录放入 Codex 技能目录
-git clone https://github.com/Wuqi24/skill-inspector-ps.git
-Copy-Item -Recurse skillspector-scan "$HOME\.codex\skills\"
+# 1. 直接克隆到 Codex 技能目录（仓库名 = 技能名）
+git clone https://github.com/Wuqi24/skillspector-scan.git "$HOME\.codex\skills\skillspector-scan"
 
-# 2. 也可以直接作为独立脚本使用，不依赖 Codex
+# 2. 也可以直接作为独立脚本使用，不依赖 Codex（进入技能目录后）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录>
 ```
 
