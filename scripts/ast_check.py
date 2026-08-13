@@ -35,6 +35,8 @@ NET_SINKS = {
     "urllib3.request",
 }
 FILE_SOURCES = {"open", "input", "sys.argv", "pickle.load", "yaml.load", "yaml.safe_load", "json.load"}
+# 直接出现在调用参数中的环境变量来源表达式（无需先赋给变量的下标形式）
+ENV_EXPRS = {"os.environ", "os.environ.get", "os.getenv", "getenv", "environ"}
 
 JS_KEYWORDS = {
     "if", "for", "while", "switch", "catch", "function", "return", "typeof",
@@ -172,7 +174,7 @@ def arg_is_literal(call):
 
 
 def collect_names(node, out):
-    """收集表达式中的变量名（递归进入字典/列表/元组/调用），用于轻量污点。"""
+    """收集表达式中的变量名与点号表达式名（递归进入字典/列表/元组/调用/下标），用于轻量污点。"""
     if node is None:
         return
     if isinstance(node, ast.Name):
@@ -186,12 +188,24 @@ def collect_names(node, out):
         for v in node.values:
             collect_names(v, out)
     elif isinstance(node, ast.Call):
+        full = call_name(node)
+        if full:
+            out.add(full)
         for a in node.args:
             collect_names(a, out)
         for kw in node.keywords:
             collect_names(kw.value, out)
     elif isinstance(node, ast.Attribute):
+        full = attr_name(node)
+        if full:
+            out.add(full)
         collect_names(node.value, out)
+    elif isinstance(node, ast.Subscript):
+        full = attr_name(node.value)
+        if full:
+            out.add(full)
+        collect_names(node.value, out)
+        collect_names(node.slice, out)
 
 
 def analyze(path):
@@ -260,12 +274,14 @@ def analyze(path):
         for kw in node.keywords:
             collect_names(kw.value, arg_names)
         for an in arg_names:
-            if an in env_reads and (n in PROCESS_SINKS or n in DANGEROUS or n in NET_SINKS):
+            env_src = an in env_reads or an in ENV_EXPRS
+            file_src = an in file_reads or an in FILE_SOURCES
+            if env_src and (n in PROCESS_SINKS or n in DANGEROUS or n in NET_SINKS):
                 findings.append({"id": "TT3", "sev": "HIGH", "file": path,
                                  "line": node.lineno,
-                                 "text": "%s() 参数来自环境变量 %s（读取于行 %d）"
-                                         % (n, an, env_reads[an])})
-            if an in file_reads and (n in PROCESS_SINKS or n in DANGEROUS):
+                                 "text": "%s() 参数来自环境变量 %s（读取于行 %s）"
+                                         % (n, an, env_reads.get(an, ""))})
+            if file_src and (n in PROCESS_SINKS or n in DANGEROUS):
                 findings.append({"id": "TT5", "sev": "HIGH", "file": path,
                                  "line": node.lineno,
                                  "text": "%s() 参数来自文件/输入 %s" % (n, an)})

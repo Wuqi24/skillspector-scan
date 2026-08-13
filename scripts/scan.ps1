@@ -14,7 +14,7 @@
   - 可选 OSV.dev 已知漏洞查询（-CheckCVE，联网；失败自动降级为离线）
   - 可选 baseline 误报抑制（-InitBaseline / -Baseline / -ShowSuppressed）
   - 简报模式（-Brief）：事实/推断两段式、TOP3、关联/参考/依赖分区、行为概要；风险标签为自动推断，不替代人工裁决
-  - 已审记录（-MarkVerified allow|deny）：写 ~/.codex/skills/.verified/，扫描时只读比对文件 SHA-256 清单
+  - 已审记录（-MarkVerified allow|deny）：写入技能根目录下 .verified/（尊重 CODEX_HOME，回退 ~/.codex/skills/.verified/），扫描时只读比对文件 SHA-256 清单
   - 输出文本或 JSON（-Json），可写文件（-Output）
   - 退出码：0 正常 / 1 存在 score>50 的目标 / 2 出错
 
@@ -58,6 +58,12 @@
   显示自动评分摘要（仅 -Brief 模式有效；自动推断指标，不代表放行/拒绝）
 .PARAMETER Interactive
   多目标简报模式下进入序号交互（单目标时忽略；与 -Parallel 同用忽略）
+.PARAMETER SelfDev
+  开发模式：自扫豁免跳过核心文件哈希校验（保留文件集白名单）
+.PARAMETER RebakeSelfHashes
+  重算核心文件 SHA-256 并刷新 scan.ps1 内自扫哈希常量块，然后退出
+.PARAMETER RegistryStats
+  输出规则注册表统计（条目数/唯一 id/regex 编译校验）并退出
 .PARAMETER MarkVerified
   显式写入已审记录：allow|deny，必须与 -Path 配对；禁止与简报/导出参数同用
 #>
@@ -83,6 +89,9 @@ param(
   [switch]$Brief,
   [switch]$Score,
   [switch]$Interactive,
+  [switch]$SelfDev,
+  [switch]$RebakeSelfHashes,
+  [switch]$RegistryStats,
   [ValidateSet('allow', 'deny')][string]$MarkVerified
 )
 
@@ -91,10 +100,32 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $skillName = 'skillspector-scan'
-$scannerVersion = '2.1.0'
+$scannerVersion = '2.2.0'
 $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
 # 自扫豁免哨兵：随脚本分发；修改脚本无需更新此常量，改名目录/复制公开文件无法伪造完整扫描器
 $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
+# 自扫豁免核心文件集（文件集白名单：目录内出现集外文件 → 不豁免，堵“整包复制+新增文件”绕过）
+$selfCoreFiles = @(
+  'SKILL.md', 'README.md', 'LICENSE', 'agents/openai.yaml', 'data/known_packages.json',
+  'references/checklist.md', 'references/scan-patterns.md', 'rules/rules.yaml',
+  'scripts/scan.ps1', 'scripts/ast_check.py', 'scripts/lexer.py', 'scripts/test.ps1'
+)
+# __SELF_HASHES_BEGIN__
+# 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
+$SelfHashes = @{
+  'SKILL.md' = '4287F046A694FA4DEEB631FF44DA4155A686F876B37C821C39D7B823027941E3'
+  'README.md' = '6FC1E6B9EBE93B274A1022DA58ADC420C0E067A69FB6E6F203A61CC902832148'
+  'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
+  'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
+  'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
+  'references/checklist.md' = 'E22DCFD3EF9745815A4224A559C9F5E6E604E4A31FD3E46F171252D645540BDE'
+  'references/scan-patterns.md' = '100B4CD762F2C1EA4BB7133132E45F706F9CAE81DEB70CB64795145E7764CF7D'
+  'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
+  'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
+  'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
+  'scripts/test.ps1' = 'D34428A814CB91A32FE887301B610495D70F62AE62D750F14A4EE020D81A6AB3'
+}
+# __SELF_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
 $lexerScript = Join-Path $PSScriptRoot 'lexer.py'
 $scriptPath = $MyInvocation.MyCommand.Path
@@ -122,59 +153,57 @@ $knownTextExt = @(
   '.bat','.cmd','.rb','.pl','.lua','.go','.rs','.c','.cpp','.h','.java','.kt','.php','.swift','.sql'
 )
 
-# 每个检测项的通俗说明（给报告读者看，不解释代号，直接说人话）
-$descMap = @{
-  AR     = '要求“永不拒绝/绕过限制”'
-  P1     = '试图覆盖或忽略指令'
-  SPL    = '诱导泄露系统提示'
-  MP     = '试图长期篡改记忆/上下文'
-  EA     = '过度自主执行、绕过确认'
-  TR     = '触发词过于宽泛'
-  E1     = '向外部发送数据'
-  E1URL  = '外部网络地址（信号）'
-  E2     = '读取环境变量/密钥'
-  E3     = '扫描敏感文件/目录'
-  E5     = '上传到云存储'
-  SSRF   = '访问内网或云元数据地址'
-  AS     = '窥探其他代理配置'
-  DC     = '危险代码调用（执行命令/动态执行）'
-  DC7    = '动态属性访问'
-  DC8    = '非字面量动态执行'
-  DC4    = '执行外部进程'
-  SC1    = '依赖未锁定版本'
-  SC2    = '远程下载并执行'
-  SC3    = '混淆/编码后执行'
-  SC4    = '依赖存在已知漏洞'
-  RA     = '持久化/开机自启'
-  PE     = '提权或绕过限制'
-  TM     = '工具参数滥用'
-  DEL    = '删除类危险操作'
-  CRED   = '疑似密钥/凭据'
-  YR1    = '恶意特征（反弹shell/木马）'
-  YR2    = '恶意特征（webshell）'
-  YR3    = '恶意特征（挖矿）'
-  YR4    = '恶意特征（攻击工具）'
-  YRM    = '多行恶意特征'
-  OBS    = '混淆内容（base64等）'
-  ZW     = '隐藏不可见字符'
-  MD     = '元数据/命名问题'
-  SYMLINK = '链接指向技能目录外'
-  RP     = '安装后清单被改动（rug-pull）'
-  TT3    = '密钥/凭据流向网络'
-  TT5    = '外部输入流入代码执行'
-  AST05  = '外部指令来源（诱导从远程地址获取指令）'
-}
-
-# OWASP Agentic Skills Top 10 启发式映射（官方分类：AST01 恶意技能 / AST02 供应链 /
-# AST03 过度权限 / AST04 元数据不可信 / AST05 外部指令来源 / AST06 隔离不足 / AST07 更新漂移）。
-# 由规则文件中的 owasp 字段覆盖；未标注的检测项（如纯信号 E1URL）不映射。
-$owaspMap = @{
-  AR='AST01'; P1='AST01'; SPL='AST01'; MP='AST01'; TR='AST01'; EA='AST03'
-  E1='AST06'; E2='AST06'; E3='AST03'; E5='AST06'; SSRF='AST06'; AS='AST03'
-  DC='AST01'; DC7='AST01'; SC2='AST02'; SC3='AST01'; RA='AST03'; PE='AST03'; TM='AST03'
-  DEL='AST01'; CRED='AST01'; YR1='AST01'; YR2='AST01'; YR3='AST01'; YR4='AST01'; YRM='AST01'
-  OBS='AST04'; ZW='AST04'; MD='AST04'; SYMLINK='AST06'; RP='AST07'; SC1='AST02'; SC4='AST02'
-  DC4='AST01'; DC8='AST01'; TT3='AST06'; TT5='AST06'; AST05='AST05'
+# 引擎内置 ID 的通俗说明与 OWASP 映射（AST/专项检查器产出的引擎 ID + 注册表中缺 owasp 字段的规则兜底）。
+# 注册表加载成功后按“仅补缺失项”合并进 $descMap/$owaspMap；本表不参与规则匹配，不是第二规则源。
+$engineMap = @{
+  DC1  = @{ desc = '危险代码调用（exec）'; owasp = 'AST01' }
+  DC2  = @{ desc = '危险代码调用（eval）'; owasp = 'AST01' }
+  DC3  = @{ desc = '动态导入（__import__）'; owasp = 'AST01' }
+  DC4  = @{ desc = '执行外部进程'; owasp = 'AST01' }
+  DC6  = @{ desc = '危险代码调用（compile）'; owasp = 'AST01' }
+  DC8  = @{ desc = '非字面量动态执行'; owasp = 'AST01' }
+  TT3  = @{ desc = '密钥/凭据流向网络'; owasp = 'AST06' }
+  TT5  = @{ desc = '外部输入流入代码执行'; owasp = 'AST06' }
+  SC1  = @{ desc = '依赖未锁定版本'; owasp = 'AST02' }
+  SC4  = @{ desc = '依赖存在已知漏洞'; owasp = 'AST02' }
+  DEP_SOURCE      = @{ desc = '依赖源不在白名单'; owasp = 'AST02' }
+  DEP_TYPOSQUAT   = @{ desc = '疑似拼写相似包'; owasp = 'AST02' }
+  DEP_HOOK        = @{ desc = '安装脚本钩子'; owasp = 'AST02' }
+  DEP_COUNT       = @{ desc = '直接依赖数超阈值'; owasp = 'AST02' }
+  DEP_UNDECLARED  = @{ desc = '未声明依赖'; owasp = 'AST02' }
+  MD      = @{ desc = '元数据/命名问题'; owasp = 'AST04' }
+  SYMLINK = @{ desc = '链接指向技能目录外'; owasp = 'AST06' }
+  RP      = @{ desc = '安装后清单被改动（rug-pull）'; owasp = 'AST07' }
+  YRM  = @{ desc = '多行恶意特征'; owasp = 'AST01' }
+  DC   = @{ desc = '危险代码调用（执行命令/动态执行）'; owasp = 'AST01' }
+  DC7  = @{ desc = '动态属性访问'; owasp = 'AST01' }
+  SC2  = @{ desc = '远程下载并执行'; owasp = 'AST02' }
+  SC3  = @{ desc = '混淆/编码后执行'; owasp = 'AST01' }
+  RA   = @{ desc = '持久化/开机自启'; owasp = 'AST03' }
+  PE   = @{ desc = '提权或绕过限制'; owasp = 'AST03' }
+  TM   = @{ desc = '工具参数滥用'; owasp = 'AST03' }
+  DEL  = @{ desc = '删除类危险操作'; owasp = 'AST01' }
+  CRED = @{ desc = '疑似密钥/凭据'; owasp = 'AST01' }
+  YR1  = @{ desc = '恶意特征（反弹shell/木马）'; owasp = 'AST01' }
+  YR2  = @{ desc = '恶意特征（webshell）'; owasp = 'AST01' }
+  YR3  = @{ desc = '恶意特征（挖矿）'; owasp = 'AST01' }
+  YR4  = @{ desc = '恶意特征（攻击工具）'; owasp = 'AST01' }
+  E2   = @{ desc = '读取环境变量/密钥'; owasp = 'AST06' }
+  E3   = @{ desc = '扫描敏感文件/目录'; owasp = 'AST03' }
+  E5   = @{ desc = '上传到云存储'; owasp = 'AST06' }
+  SSRF = @{ desc = '访问内网或云元数据地址'; owasp = 'AST06' }
+  AS   = @{ desc = '窥探其他代理配置'; owasp = 'AST03' }
+  OBS  = @{ desc = '混淆内容（base64等）'; owasp = 'AST04' }
+  ZW   = @{ desc = '隐藏不可见字符'; owasp = 'AST04' }
+  PUBLIC_IP_CALL         = @{ desc = '向公网 IP 发起网络调用'; owasp = 'AST06' }
+  INSECURE_HTTP_CALL     = @{ desc = '向非 HTTPS 域名发起网络调用'; owasp = 'AST06' }
+  BROWSER_SESSION_ACCESS = @{ desc = '访问浏览器 Cookie/会话'; owasp = 'AST06' }
+  INSTALL_HOOK           = @{ desc = '安装脚本钩子'; owasp = 'AST02' }
+  UNDECLARED_INSTALL     = @{ desc = '未声明安装软件包'; owasp = 'AST02' }
+  LOOPBACK_ACCESS   = @{ desc = '回环地址访问'; owasp = 'AST06' }
+  AGENT_MEMORY_FILE = @{ desc = '访问 AI 身份/记忆文件'; owasp = 'AST03' }
+  INTERNAL_NET_CALL = @{ desc = '向内网地址发起网络调用'; owasp = 'AST06' }
+  OBFUSCATION       = @{ desc = '混淆代码（极长单行）'; owasp = 'AST04' }
 }
 
 # ---------- 规则注册表（冻结版，非毒库） ----------
@@ -345,6 +374,12 @@ function Get-RegistryRules {
     $script:linePatterns = @($lp)
     $script:multiPatterns = @($mp)
     $script:hintPatterns = @($hp)
+    # 引擎内置兜底：注册表未覆盖的引擎 ID 与缺 owasp 字段的规则，补 desc/OWASP 映射（仅补缺失项）
+    foreach ($k in @($engineMap.Keys)) {
+      $em = $engineMap[$k]
+      if (-not $script:descMap.ContainsKey($k) -and $em.desc) { $script:descMap[$k] = $em.desc }
+      if (-not $script:owaspMap.ContainsKey($k) -and $em.owasp) { $script:owaspMap[$k] = $em.owasp }
+    }
     # 简报展示投影：普通规则命中在简报模式下显示为更具体的简报规则
     $script:briefProjectionFrom = @{}
     foreach ($pj in @($o.projections)) {
@@ -354,6 +389,7 @@ function Get-RegistryRules {
         category = [string]$pj.category; description = [string]$pj.description
       }
       $script:briefProjectionFrom[[string]$pj.from] = $pjObj
+      if ($pj.rule_id -and -not $script:descMap.ContainsKey([string]$pj.rule_id)) { $script:descMap[[string]$pj.rule_id] = [string]$pj.description }
     }
     $script:registryLoaded = $true
     return $true
@@ -392,33 +428,100 @@ function Get-RegistryHashes {
   }
 }
 
+function Write-SelfHashes {
+  # 重算核心文件（除 scan.ps1 自身）的 SHA-256，重写 scan.ps1 标记块内的 $SelfHashes 常量
+  $skillDir = Split-Path $PSScriptRoot -Parent
+  $lines = New-Object System.Collections.ArrayList
+  [void]$lines.Add('# __SELF_HASHES_BEGIN__')
+  [void]$lines.Add('# 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。')
+  [void]$lines.Add('$SelfHashes = @{')
+  foreach ($rel in @($selfCoreFiles | Where-Object { $_ -ne 'scripts/scan.ps1' })) {
+    $hp = Join-Path $skillDir ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $hp)) { Write-Output ('错误: 核心文件缺失，无法刷新哈希: ' + $rel); exit 2 }
+    $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $hp).Hash
+    [void]$lines.Add(("  '" + $rel + "' = '" + $h + "'"))
+  }
+  [void]$lines.Add('}')
+  [void]$lines.Add('# __SELF_HASHES_END__')
+  $block = ($lines -join "`r`n")
+  $text = [System.IO.File]::ReadAllText($scriptPath, [System.Text.Encoding]::UTF8)
+  $rx = [regex]'# __SELF_HASHES_BEGIN__[\s\S]*?# __SELF_HASHES_END__'
+  if (-not $rx.IsMatch($text)) { Write-Output '错误: scan.ps1 中缺少哈希标记块，无法刷新'; exit 2 }
+  $text = $rx.Replace($text, $block, 1)
+  [System.IO.File]::WriteAllText($scriptPath, $text, (New-Object System.Text.UTF8Encoding($true)))
+  Write-Output ('自扫哈希已刷新（11 个核心文件，除 scan.ps1 自身）')
+}
+
+function Write-RegistryStats {
+  # 注册表统计与 regex 编译校验（YAML 解析器独立测试入口）
+  $failCount = 0
+  foreach ($r in @($registry.rules) + @($registry.hints)) {
+    if (-not $r.regex) { continue }
+    try { [void][regex]::new([string]$r.regex) } catch { $failCount++; Write-Output ('REGEX_FAIL ' + $r.rule_id + ': ' + $_.Exception.Message) }
+  }
+  $out = [ordered]@{
+    version = 1
+    rule_entries = @($registry.rules).Count
+    unique_rule_ids = @($registry.rules | ForEach-Object { $_.rule_id } | Sort-Object -Unique).Count
+    hints = @($registry.hints).Count
+    projections = @($registry.projections).Count
+    compile_failures = $failCount
+    rules_version = [string]$registry.rules_version
+  }
+  $content = $out | ConvertTo-Json -Compress
+  if ($Output) {
+    [System.IO.File]::WriteAllText($Output, $content, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output ('注册表统计已写入: ' + $Output)
+  } else {
+    Write-Output $content
+  }
+}
+
 if (-not (Get-RegistryRules)) {
   Write-Output '错误: 规则注册表加载失败（rules/rules.yaml 缺失或解析失败），拒绝运行'
   exit 2
 }
+if ($RebakeSelfHashes) { Write-SelfHashes; exit 0 }
+if ($RegistryStats) { Write-RegistryStats; exit 0 }
 
 function Test-SelfSkill {
-  # 自扫豁免内容指纹：目录名 + SKILL.md frontmatter name + 哨兵常量 + 核心文件存在，全部满足才豁免
+  # 自扫豁免三层判定：结构指纹 + 文件集白名单 + 核心文件哈希（scan.ps1 自身哈希无法自嵌，不在校验内）
+  # 已知局限：开源无外部信任锚，高对抗整包伪造者仍可复制全部内容；文件集白名单堵住“整包复制+新增文件”绕过
   param([string]$scanPath)
   try {
     if ((Split-Path $scanPath -Leaf) -ne $skillName) { return $false }
     $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
     if (-not $item.PSIsContainer) { return $false }
+    # 1) 结构指纹：SKILL.md frontmatter name + scan.ps1 哨兵常量
     $skillMd = Join-Path $scanPath 'SKILL.md'
-    $scanScript = Join-Path $scanPath 'scripts\scan.ps1'
-    $astScript = Join-Path $scanPath 'scripts\ast_check.py'
-    $rulesFile = Join-Path $scanPath 'rules\rules.yaml'
     if (-not (Test-Path -LiteralPath $skillMd)) { return $false }
-    if (-not (Test-Path -LiteralPath $scanScript)) { return $false }
-    if (-not (Test-Path -LiteralPath $astScript)) { return $false }
-    if (-not (Test-Path -LiteralPath $rulesFile)) { return $false }
     $nameOk = $false
     foreach ($line in @(Get-Content -Encoding UTF8 -LiteralPath $skillMd -TotalCount 8)) {
       if ($line -match '^name:\s*[''"]?skillspector-scan[''"]?\s*$') { $nameOk = $true; break }
     }
     if (-not $nameOk) { return $false }
-    $scriptText = Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript -ErrorAction Stop
-    if (-not $scriptText.Contains($SelfMarker)) { return $false }
+    $scanScript = Join-Path $scanPath 'scripts\scan.ps1'
+    if (-not (Test-Path -LiteralPath $scanScript)) { return $false }
+    if (-not (Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript).Contains($SelfMarker)) { return $false }
+    # 2) 文件集白名单：核心文件集之外出现任何文件 → 不豁免（堵“整包复制+新增恶意文件”绕过）
+    $relPaths = @()
+    foreach ($f in @(Get-ItemsSafe $scanPath)) {
+      $rel = $f.FullName.Substring($scanPath.Length).TrimStart('\', '/').Replace('\', '/')
+      if ($f.Name -like '.skillspector-baseline*' -or $rel -in @('.skillspector-verified.yaml', '.DS_Store', 'Thumbs.db')) { continue }
+      if ($selfCoreFiles -notcontains $rel) { return $false }
+      $relPaths += $rel
+    }
+    foreach ($core in $selfCoreFiles) {
+      if ($relPaths -notcontains $core) { return $false }
+    }
+    # 3) 哈希白名单：校验除 scan.ps1 外的核心文件；-SelfDev 跳过哈希（保留文件集校验），供开发期使用
+    if (-not $SelfDev) {
+      foreach ($k in @($SelfHashes.Keys)) {
+        $hp = Join-Path $scanPath ($k -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $hp)) { return $false }
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $hp).Hash -ne $SelfHashes[$k]) { return $false }
+      }
+    }
     return $true
   } catch {
     return $false
@@ -1949,21 +2052,6 @@ function Get-RuleDesc {
     if ($r.rule_id -eq $ruleId) { return $r.description }
   }
   if ($descMap.ContainsKey($ruleId)) { return $descMap[$ruleId] }
-  $legacyDesc = @{
-    YRM = '多行恶意特征'; DC4 = '执行外部进程'; DC8 = '非字面量动态执行'; SC1 = '依赖未锁定版本';
-    SC4 = '依赖存在已知漏洞'; MD = '元数据/命名问题'; SYMLINK = '链接指向技能目录外'; RP = '安装后清单被改动';
-    CRED = '疑似密钥/凭据'; DEP_SOURCE = '依赖源不在白名单'; DEP_TYPOSQUAT = '疑似拼写相似包';
-    DEP_HOOK = '安装脚本钩子'; DEP_COUNT = '直接依赖数超阈值'; DEP_UNDECLARED = '未声明依赖';
-    TT3 = '密钥/凭据流向网络'; TT5 = '外部输入流入代码执行'; OBS = '混淆内容（base64等）'; ZW = '隐藏不可见字符';
-    AST05 = '外部指令来源'; AR = '要求“永不拒绝/绕过限制”'; P1 = '试图覆盖或忽略指令';
-    SPL = '诱导泄露系统提示'; MP = '试图长期篡改记忆/上下文'; EA = '过度自主执行、绕过确认';
-    TR = '触发词过于宽泛'; E1 = '向外部发送数据'; E1URL = '外部网络地址（信号）'; E2 = '读取环境变量/密钥';
-    E3 = '扫描敏感文件/目录'; E5 = '上传到云存储'; SSRF = '访问内网或云元数据地址'; AS = '窥探其他代理配置';
-    DC = '危险代码调用（执行命令/动态执行）'; DC7 = '动态属性访问'; SC2 = '远程下载并执行'; SC3 = '混淆/编码后执行';
-    RA = '持久化/开机自启'; PE = '提权或绕过限制'; TM = '工具参数滥用'; DEL = '删除类危险操作';
-    YR1 = '恶意特征（反弹shell/木马）'; YR2 = '恶意特征（webshell）'; YR3 = '恶意特征（挖矿）'; YR4 = '恶意特征（攻击工具）'
-  }
-  if ($legacyDesc.ContainsKey($ruleId)) { return $legacyDesc[$ruleId] }
   return $ruleId
 }
 
