@@ -5,7 +5,7 @@
 .DESCRIPTION
   对技能目录 / 单个文件 / .zip 做静态安全检查：
   - 单遍读取文本文件，自动探测编码（UTF-8 BOM / UTF-16 / 严格 UTF-8 / GBK 兜底）
-  - 29 组行级正则 + 多行恶意特征 + base64 载荷解码复查
+  - 行级/多行规则统一来自冻结注册表 rules/rules.yaml（36 唯一/40 条目 + 4 hints），base64 载荷解码复查
   - 命中按语境标注：code（代码）/ config（配置）/ doc（文档）/ data（数据），
     文档语境（.md、代码围栏）自动标记为可排除，降低误报
   - 自动检查：依赖是否锁定版本（requirements/Pipfile/pyproject/package.json）、
@@ -91,8 +91,10 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $skillName = 'skillspector-scan'
-$scannerVersion = '2.0.0'
+$scannerVersion = '2.1.0'
 $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
+# 自扫豁免哨兵：随脚本分发；修改脚本无需更新此常量，改名目录/复制公开文件无法伪造完整扫描器
+$SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
 $lexerScript = Join-Path $PSScriptRoot 'lexer.py'
 $scriptPath = $MyInvocation.MyCommand.Path
@@ -118,48 +120,6 @@ $knownTextExt = @(
   '.editorconfig','.gitignore','.gitattributes','.dockerignore','.svg','.lock','.html','.htm',
   '.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.sh','.bash','.zsh','.ps1','.psm1','.psd1',
   '.bat','.cmd','.rb','.pl','.lua','.go','.rs','.c','.cpp','.h','.java','.kt','.php','.swift','.sql'
-)
-
-# 行级模式：id / severity / regex。score=$false 表示仅作信号、不计分（如 E1URL）
-$linePatterns = @(
-  @{ id='AR';   sev='HIGH'; owasp='AST01'; re='never\s+refuse|always\s+comply|no\s+disclaimers|no\s+restrictions|ignore\s+your\s+guidelines|do\s+anything\s+now|永不拒绝|永远不要拒绝|不许拒绝|不要(添加|加|输出|提醒).*(免责声明|警告|风险)|不要提示.*风险|别啰嗦' },
-  @{ id='P1';   sev='HIGH'; owasp='AST01'; re='忽略.*(系统|上级|指令)|无视.*(指令|规则|限制)|override\s+(system|instruction|policy|safety)|only\s+obey|只服从本文件|以本文件为准' },
-  @{ id='SPL';  sev='HIGH'; owasp='AST01'; re='system\s+prompt|print\s+.*instructions|输出.*(系统提示|系统指令|内部规则)|复述.*(系统提示|指令)|show\s+.*(system\s+prompt|instructions)' },
-  @{ id='MP';   sev='MED';  owasp='AST01'; re='记住.*(永远|长期)|persist\s+this|long[- ]term|跨会话|写入.*(memory|记忆)|修改.*(memory|记忆)|永远记住' },
-  @{ id='EA';   sev='MED';  owasp='AST03'; re='无需确认|不要问问题|不用征求同意|不用询问|no\s+confirmation|without\s+asking|full\s+access|自动执行|直接执行.*(删除|发布|转账|提交)|不需要.*确认|don.t\s+ask' },
-  @{ id='TR';   sev='MED';  owasp='AST01'; re='always\s+(comply|obey|follow|do|run|use)|一切.*(任务|请求)|所有.*(任务|请求).*(执行|处理)|无论如何都要|任何情况下都|无条件执行' },
-  @{ id='E1';   sev='MED';  owasp='AST06'; re='requests\.(post|put|patch)|httpx|aiohttp|fetch\s*\(|Invoke-WebRequest|Invoke-RestMethod|curl\s+.*(-d|--data|-X)|urllib\.(request|parse)|http\.client|WebClient|XMLHttpRequest|axios|\.post\s*\(|\.put\s*\(' },
-  @{ id='E1URL'; sev='LOW'; owasp=''; re='https?://'; score=$false },
-  @{ id='E2';   sev='HIGH'; owasp='AST06'; re='os\.environ|process\.env|Get-ChildItem\s+Env:|environ\.get|os\.getenv|getenv\s*\(|Env:\w+|lookupEnv|API_KEY|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|PASSWORD' },
-  @{ id='E3';   sev='MED';  owasp='AST03'; re='\.ssh[\\/]|\.aws[\\/]|credentials(\.json|\.txt|\.ini|\.env)?|os\.walk\s*\(|glob\s*\(.*(home|/Users|/home)' },
-  @{ id='E5';   sev='MED';  owasp='AST06'; re='put_object|upload_file|s3\s+cp|gsutil|upload_blob|UploadFromFile|copy_object' },
-  @{ id='SSRF'; sev='HIGH'; owasp='AST06'; re='169\.254\.169\.254|metadata\.google|metadata\.compute|instance-data|127\.0\.0\.1|localhost|192\.168\.|10\.\d+\.\d+\.\d+' },
-  @{ id='AS';   sev='HIGH'; owasp='AST03'; re='\.claude[\\/]|\.codex[\\/]|\.gemini[\\/]|mcp\.json|credentials\.json' },
-  @{ id='DC';   sev='HIGH'; owasp='AST01'; re='\bexec\s*\(|\beval\s*\(|\bcompile\s*\(|__import__\s*\(|os\.system\s*\(|subprocess\s*\.|Popen\s*\(|Invoke-Expression|\bIEX\b|child_process|execSync|new\s+Function\s*\(|System\.Diagnostics\.Process|Start-Process' },
-  @{ id='DC7';  sev='MED';  owasp='AST01'; re='getattr\s*\([^,]+,\s*(?!\s*[\x22\x27])' },
-  @{ id='SC2';  sev='HIGH'; owasp='AST02'; re='curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh|irm\s+.*\|\s*iex|iwr\s+.*\|\s*iex|DownloadString|DownloadFile|Invoke-Expression\s*\([^)]*http' },
-  @{ id='SC3';  sev='HIGH'; owasp='AST01'; re='b64decode\s*\(|Convert\.FromBase64String|FromBase64\s*\(|-?enc\s+[A-Za-z0-9+/=]{16,}' },
-  @{ id='RA';   sev='HIGH'; owasp='AST03'; re='crontab\s*(-e)?|schtasks|Startup[\\/]|launchd|systemd|\.bashrc|\.zshrc|\.profile|HKCU:|CurrentVersion[\\/]Run|reg\s+add.*Run|Set-ItemProperty.*Run|New-ScheduledTask' },
-  @{ id='PE';   sev='MED';  owasp='AST03'; re='sudo\s|runas\s|--no-sandbox|--insecure|-ExecutionPolicy\s+Bypass|Set-ExecutionPolicy|Bypass\s*=\s*true|requireAdministrator|admin:\s*true|elevat' },
-  @{ id='TM';   sev='MED';  owasp='AST03'; re='shell\s*=\s*True|--force\b|--yes\b|-y\b|privileged:\s*true|hostPath|--no-verify|--unsafe-perm|--allow-root' },
-  @{ id='DEL';  sev='HIGH'; owasp='AST01'; re='rm\s+-rf|Remove-Item\s+.*-Recurse|-Recurse\s+.*Remove-Item|del\s+/s|rmdir\s+/s|shutil\.rmtree|os\.remove|os\.unlink' },
-  @{ id='CRED'; sev='HIGH'; owasp='AST01'; re='sk-[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN[^-]+PRIVATE\s+KEY-----|xox[baprs]-[A-Za-z0-9\-]{20,}' },
-  @{ id='YR1';  sev='HIGH'; owasp='AST01'; re='bash\s+-i|/dev/tcp/|nc\s+-e|ncat\s+-e|socat\s+tcp|reverse\s+shell|meterpreter|webshell|antsword|冰蝎|哥斯拉' },
-  @{ id='YR2';  sev='HIGH'; owasp='AST01'; re='<\?php[^\r\n]*(eval|assert|system|shell_exec)\s*\(|eval\s*\(\s*\S*_POST|eval\s*\(\s*\S*_REQUEST|cmd\s+/c|powershell\s+(-enc|-e)\s+[A-Za-z0-9+/=]{8,}' },
-  @{ id='YR3';  sev='HIGH'; owasp='AST01'; re='stratum|xmrig|minergate|nicehash|cryptonight' },
-  @{ id='YR4';  sev='HIGH'; owasp='AST01'; re='metasploit|sqlmap|nuclei\s+-t|nikto|hydra\s+-l|masscan|beef-xss' },
-  @{ id='OBS';  sev='MED';  owasp='AST04'; re='b64decode\s*\(|atob\s*\(|btoa\s*\(|FromBase64|\\x[0-9a-f]{2}|\\u[0-9a-f]{4}' },
-  @{ id='ZW';   sev='MED';  owasp='AST04'; re='[\u200b\u200c\u200d\u2060\ufeff\u202e]' },
-  @{ id='AST05'; sev='HIGH'; owasp='AST05'; re='(?i)(?:fetch|retrieve|read|download|get|curl|visit|open|access|follow|obey|execute|按|照|根据|遵循|遵从|听从|读取|获取|访问|下载|抓取|执行)(?:[^\r\n]{0,80}?)(?:https?://[^\s\r\n]{1,80})(?:[^\r\n]{0,40}?)(?:instructions?|directives?|guidelines?|rules|commands?|指令|指示|规则)|(?:fetch|retrieve|read|download|get|follow|obey|execute|读取|获取|访问|下载)(?:[^\r\n]{0,40}?)(?:instructions?|directives?|guidelines?|rules|commands?|指令|指示|规则)(?:[^\r\n]{0,40}?)(?:from|at|on)?\s*https?://[^\s\r\n]{1,80}|https?://[^\s\r\n]{1,80}[^\r\n]{0,40}(?:获取|读取|下载|fetch|read|download|retrieve)[^\r\n]{0,40}(?:指令|指示|规则|instructions?|directives?)|(?:把|将|treat|consider|regard)[^\r\n]{0,30}(?:网页|页面|网站|内容|content|page|website|url|链接|文件)[^\r\n]{0,30}(?:当作|视为|作为|as)[^\r\n]{0,30}(?:指令|指示|规则|instructions?|directives?|guidelines?|rules)' }
-)
-
-# 多行特征（对整文件文本匹配，兼容跨行写法）
-$multiPatterns = @(
-  @{ id='YRM'; sev='HIGH'; owasp='AST01'; re='(?s)bash\s+-i\s+>&?\s*/dev/tcp/' },
-  @{ id='YRM'; sev='HIGH'; owasp='AST01'; re='(?s)(python|perl|ruby)\s+-c\s+[\x22\x27][^\x22\x27]{0,300}(socket|pty|exec|base64)' },
-  @{ id='YRM'; sev='HIGH'; owasp='AST01'; re='(?s)powershell[^\r\n]{0,150}\s+(-enc|-e)\s+[A-Za-z0-9+/=]{20,}' },
-  @{ id='YRM'; sev='HIGH'; owasp='AST01'; re='(?s)curl\s+[^\r\n]{0,200}\s*\|\s*(ba)?sh' },
-  @{ id='YRM'; sev='HIGH'; owasp='AST01'; re='(?s)wget\s+[^\r\n]{0,200}\s*\|\s*(ba)?sh' }
 )
 
 # 每个检测项的通俗说明（给报告读者看，不解释代号，直接说人话）
@@ -432,7 +392,38 @@ function Get-RegistryHashes {
   }
 }
 
-[void](Get-RegistryRules)
+if (-not (Get-RegistryRules)) {
+  Write-Output '错误: 规则注册表加载失败（rules/rules.yaml 缺失或解析失败），拒绝运行'
+  exit 2
+}
+
+function Test-SelfSkill {
+  # 自扫豁免内容指纹：目录名 + SKILL.md frontmatter name + 哨兵常量 + 核心文件存在，全部满足才豁免
+  param([string]$scanPath)
+  try {
+    if ((Split-Path $scanPath -Leaf) -ne $skillName) { return $false }
+    $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
+    if (-not $item.PSIsContainer) { return $false }
+    $skillMd = Join-Path $scanPath 'SKILL.md'
+    $scanScript = Join-Path $scanPath 'scripts\scan.ps1'
+    $astScript = Join-Path $scanPath 'scripts\ast_check.py'
+    $rulesFile = Join-Path $scanPath 'rules\rules.yaml'
+    if (-not (Test-Path -LiteralPath $skillMd)) { return $false }
+    if (-not (Test-Path -LiteralPath $scanScript)) { return $false }
+    if (-not (Test-Path -LiteralPath $astScript)) { return $false }
+    if (-not (Test-Path -LiteralPath $rulesFile)) { return $false }
+    $nameOk = $false
+    foreach ($line in @(Get-Content -Encoding UTF8 -LiteralPath $skillMd -TotalCount 8)) {
+      if ($line -match '^name:\s*[''"]?skillspector-scan[''"]?\s*$') { $nameOk = $true; break }
+    }
+    if (-not $nameOk) { return $false }
+    $scriptText = Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript -ErrorAction Stop
+    if (-not $scriptText.Contains($SelfMarker)) { return $false }
+    return $true
+  } catch {
+    return $false
+  }
+}
 
 function Get-SkillsRoot {
   if ($env:CODEX_HOME) { return Join-Path $env:CODEX_HOME 'skills' }
@@ -640,7 +631,7 @@ function New-Finding {
   $obj = [pscustomobject]@{
     finding_id = ''
     id       = $id
-    desc     = if ($descMap.ContainsKey($id)) { $descMap[$id] } else { '' }
+    desc     = if ($descMap.ContainsKey($id)) { $descMap[$id] } else { Get-RuleDesc $id }
     owasp    = if ($owaspMap.ContainsKey($id)) { $owaspMap[$id] } else { '' }
     severity = $severity
     file     = $file
@@ -1125,7 +1116,7 @@ function Invoke-ScanPath {
   $suppressed = New-Object System.Collections.ArrayList
   $skipped = New-Object System.Collections.ArrayList
   $errors = New-Object System.Collections.ArrayList
-  $self = ((Split-Path $scanPath -Leaf) -eq $skillName)
+  $self = Test-SelfSkill $scanPath
   $briefMode = $Brief -or ($env:SKILLSPECTOR_BRIEF -eq '1')
   $root = $scanPath
   $allFiles = @()
@@ -1267,6 +1258,7 @@ function Invoke-ScanPath {
             if ($self) { $doc = $true }
             elseif ($fctx -eq 'doc_code') { $doc = $false }
             elseif ($fctx -in @('comment', 'doc')) { $doc = $true }
+            if ($f.Name -eq 'SKILL.md' -and $p.id -in $instructionIds -and -not $inFence -and -not $inComment) { $doc = $self }
           }
           $text = $line.Trim()
           if ($text.Length -gt 160) { $text = $text.Substring(0, 160) + '…' }
@@ -1358,14 +1350,28 @@ function Invoke-ScanPath {
   # git 历史敏感信息（可选）
   foreach ($gf in @(Get-GitHistoryFindings $root $errors)) { [void]$findings.Add($gf) }
 
-  # 去重（id + 文件 + 行）
+  # 去重（id + 文件 + 行）：同键保留“非 doc 优先，其次高置信”
   $seen = @{}
   $unique = New-Object System.Collections.ArrayList
   foreach ($f in $findings) {
     $key = $f.id + '|' + $f.file + '|' + $f.line
-    if ($seen.ContainsKey($key)) { continue }
-    $seen[$key] = $true
-    [void]$unique.Add($f)
+    if (-not $seen.ContainsKey($key)) {
+      $seen[$key] = $f
+      [void]$unique.Add($f)
+      continue
+    }
+    $ex = $seen[$key]
+    $confRank = @{ high = 3; medium = 2; low = 1 }
+    $exP = 0; if ($confRank.ContainsKey($ex.confidence)) { $exP = $confRank[$ex.confidence] }
+    $fP = 0; if ($confRank.ContainsKey($f.confidence)) { $fP = $confRank[$f.confidence] }
+    $better = $false
+    if ((-not $f.doc) -and $ex.doc) { $better = $true }
+    elseif ($f.doc -eq $ex.doc -and $fP -gt $exP) { $better = $true }
+    if ($better) {
+      $idx = $unique.IndexOf($ex)
+      $unique[$idx] = $f
+      $seen[$key] = $f
+    }
   }
   $findings = $unique
 
@@ -1498,11 +1504,11 @@ function Get-Invocation {
 }
 
 function Get-Confidence {
-  # 固定算法：doc_code/解析失败 → low；executable + active + called/framework_entry → high；其余 medium
+  # 固定算法：doc_code/解析失败 → low；executable + active + framework_entry → high；其余 medium
   param([string]$activity, [string]$invocation, [string]$execution, [string]$context, [string]$fileStatus)
   if ($context -eq 'doc_code' -or $fileStatus -in @('partial', 'failed')) { return 'low' }
   if ($execution -ne 'executable') { return 'low' }
-  if ($activity -eq 'active' -and $invocation -in @('called', 'framework_entry')) { return 'high' }
+  if ($activity -eq 'active' -and $invocation -eq 'framework_entry') { return 'high' }
   return 'medium'
 }
 
@@ -1568,7 +1574,7 @@ function Get-BriefTop3 {
   $sevRank = @{ critical = 2; suspicious = 1; info = 0; reference = 0 }
   $confRank = @{ high = 3; medium = 2; low = 1 }
   $actRank = @{ active = 4; mixed = 3; passive = 2; unknown = 1 }
-  $invRank = @{ called = 5; framework_entry = 4; dynamic = 3; unknown = 2; not_called = 1 }
+  $invRank = @{ framework_entry = 4; dynamic = 3; unknown = 2; not_called = 1 }
   $execRank = @{ executable = 3; unknown = 2; documented = 1 }
   $cands = @($findings | Where-Object { -not $_.doc -and $_.id -ne 'CREDENTIAL_LOOPBACK_COEXIST' -and -not (Get-BriefView $_).hide })
   $sorted = @($cands | Sort-Object -Property `
@@ -1781,6 +1787,8 @@ function Get-TargetIdentity {
 }
 
 function Get-VerifiedDir {
+  $root = Get-SkillsRoot
+  if ($root) { return Join-Path $root '.verified' }
   return Join-Path $env:USERPROFILE '.codex\skills\.verified'
 }
 

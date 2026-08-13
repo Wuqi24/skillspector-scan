@@ -1,6 +1,6 @@
 # 扫描模式速查
 
-内置脚本 `scripts/scan.ps1` 已内置全部模式（单遍扫描、编码自动探测、语境标注、注释词法识别、base64 解码复查、多行特征）；简报模式（-Brief）按冻结注册表 `rules/rules.yaml`（17+4 条）渲染。下表供手动搜索备选；`rg` 可用优先 `rg`，否则用 `Select-String` 兜底。
+内置脚本 `scripts/scan.ps1` 已内置全部模式（逐文件单次读取 + 专项多阶段检查、编码自动探测、语境标注、注释词法识别、base64 解码复查、多行特征）；简报模式（-Brief）按冻结注册表 `rules/rules.yaml`（36 唯一/40 条目 + 4 hints + 11 projections）渲染。下表供手动搜索备选；`rg` 可用优先 `rg`，否则用 `Select-String` 兜底。
 
 ## 基础命令
 

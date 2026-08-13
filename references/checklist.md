@@ -189,4 +189,4 @@
 - 注释/文档语境命中归“参考发现”，不计入风险计数与 TOP 3；`doc_code`（文档代码示例）是风险发现但 `execution=documented`、`confidence=low`
 - 关联规则只做“共存”判断（如凭证读取+回环访问），不推断数据流；correlation finding 的 `source_finding_id` 必须能追溯到原始文件证据
 - `-MarkVerified allow|deny` 仅对 `analysis_status=complete` 的扫描生效；已审记录按文件 SHA-256 清单 + 规则/配置/包表哈希比对，任何变化都会使旧结论失效提示
-- 规则来自冻结注册表 `rules/rules.yaml`（17+4 条），不支持联网更新或运行时收录；人工修改规则后旧审核自动失效
+- 规则来自冻结注册表 `rules/rules.yaml`（36 唯一/40 条目 + 4 hints + 11 projections），不支持联网更新或运行时收录；人工修改规则后旧审核自动失效

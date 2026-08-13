@@ -1,6 +1,6 @@
 ---
 name: skillspector-scan
-description: 对本地 skill 做静态安全审查：覆盖提示注入、反拒答/越狱、外部指令来源（OWASP AST05）、数据外泄与污点外传、供应链、代码级危险调用（exec/eval/subprocess）、SSRF、系统提示泄露、记忆投毒、过度自主权、工具滥用、触发词滥用、MCP 投毒、Agent 窥探、提权/危险操作等 16+ 类风险；内置脚本支持单遍扫描、编码探测、语境降噪、注释词法识别、依赖锁定与离线依赖分析、Python/JS 行为分析（AST/轻量污点）、base64 载荷解码复查、符号链接越界、git 历史密钥、manifest 变化（rug-pull）检测、baseline 误报抑制、并行批量、JSON 输出与 OSV 漏洞查询；简报模式（-Brief）输出“事实+推断”两段式报告（行为概要/TOP3/关联/参考/依赖分区，风险标签为自动推断不替代人工裁决），并支持已审记录（-MarkVerified，文件 SHA-256 清单比对、变化即失效）。当用户要求“扫描这个 skill”“检查/评估某个 skill 或技能的安全性”“这个技能安全吗”“用 SkillSpector 扫描”时使用，也适用于安装第三方 skill 前的审查。
+description: 对本地 skill 做静态安全审查：覆盖提示注入、反拒答/越狱、外部指令来源（OWASP AST05）、数据外泄与污点外传、供应链、代码级危险调用（exec/eval/subprocess）、SSRF、系统提示泄露、记忆投毒、过度自主权、工具滥用、触发词滥用、MCP 投毒、Agent 窥探、提权/危险操作等 16+ 类风险；内置脚本支持逐文件单次读取 + 专项多阶段检查、编码探测、语境降噪、注释词法识别、依赖锁定与离线依赖分析、Python/JS 行为分析（AST/轻量污点）、base64 载荷解码复查、符号链接越界、git 历史密钥、manifest 变化（rug-pull）检测、baseline 误报抑制、并行批量、JSON 输出与 OSV 漏洞查询；简报模式（-Brief）输出“事实+推断”两段式报告（行为概要/TOP3/关联/参考/依赖分区，风险标签为自动推断不替代人工裁决），并支持已审记录（-MarkVerified，文件 SHA-256 清单比对、变化即失效）。当用户要求“扫描这个 skill”“检查/评估某个 skill 或技能的安全性”“这个技能安全吗”“用 SkillSpector 扫描”时使用，也适用于安装第三方 skill 前的审查。
 ---
 
 # SkillSpector 扫描

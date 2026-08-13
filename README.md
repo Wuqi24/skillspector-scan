@@ -21,7 +21,7 @@
 
 - 全离线：唯一可联网项是可选 `-CheckCVE`（OSV.dev 查询，失败自动降级离线）
 - 静态只读：无沙箱、无自动拦截、无自动净化
-- 单遍扫描 + 编码探测（UTF-8/UTF-16/GBK）+ 语境标注 + 注释词法识别
+- 逐文件单次读取 + 专项多阶段检查 + 编码探测（UTF-8/UTF-16/GBK）+ 语境标注 + 注释词法识别
 - Python AST/轻量污点分析、JS 行为启发式、base64 载荷解码复查、符号链接越界检测、git 历史密钥检测、manifest 变化检测
 - 依赖锁定与离线依赖分析（来源白名单、拼写欺诈、安装脚本钩子、依赖数阈值）
 - 简报模式（`-Brief`）：行为概要 → 最坏情况 TOP3 → 详细发现 → 参考发现 → 依赖风险，每条命中带“事实 + 推断”
@@ -59,7 +59,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 # JSON 输出（可接 CI）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -Json -Output report.json
 
-# 人工裁决后写入已审记录（仅完整扫描可写，写入 ~/.codex/skills/.verified/）
+# 人工裁决后写入已审记录（仅完整扫描可写，写入技能根 .verified/；尊重 CODEX_HOME，回退 ~/.codex/skills/.verified/）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified allow -Path <技能目录>
 
 # 基线抑制误报
@@ -86,7 +86,7 @@ PowerShell 7 环境把开头的 `powershell` 换成 `pwsh` 即可。支持直接
 
 ## 已审记录
 
-- 存储位置：`~/.codex/skills/.verified/<skill>.json`
+- 存储位置：技能根 `.verified/<skill>.json`（尊重 `CODEX_HOME`，回退 `~/.codex/skills/.verified/`）
 - 写入：仅通过 `-MarkVerified allow|deny -Path <skill>` 显式写入，扫描时不写盘
 - 前置条件：目标 `analysis_status` 必须为 `complete`，否则禁止写入
 - 再次扫描只读比对：文件 SHA-256 全部匹配 → 显示“上次已审”；任一文件变化 → “内容已变，上次结论可能失效”；规则/配置版本或哈希变化 → “扫描规则或配置已更新，上次结论可能失效”
