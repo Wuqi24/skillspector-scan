@@ -116,6 +116,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 - 二进制/加密内容无法静态分析，列入跳过清单待人工确认
 - 本仓库与 NVIDIA SkillSpector 官方项目无直接关联，设计思路受其启发，独立实现
 
+## 致谢
+
+设计思路参考 NVIDIA [SkillSpector](https://github.com/NVIDIA/SkillSpector)（Apache-2.0，AI Agent 技能安全扫描器）；本项目为独立实现的 PowerShell 静态扫描器，不含其代码。
+
 ## License
 
 MIT，见 [LICENSE](LICENSE)。
