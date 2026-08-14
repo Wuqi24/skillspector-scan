@@ -729,6 +729,42 @@ subprocess.run(os.environ["CMD"], shell=True)
   if ($objP.targets.Count -ne 1 -or $objP.targets[0].target_type -ne 'directory' -or $tP -notmatch 'not recognized as isolated skill') {
     Write-Host ("FAIL Scope 普通目录: n=" + $objP.targets.Count + " type=" + $objP.targets[0].target_type); $fail++
   } else { Write-Host 'OK Scope 普通目录（可扫描 + Warning）' }
+
+  # 50) PrePublish：git 仓库内存在 .env（未跟踪）→ 文件清单 FAIL + 内容 FAIL + exit 1
+  $gitExe = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $gitExe) {
+    $bundledGit = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe'
+    if (Test-Path -LiteralPath $bundledGit) { $gitExe = [pscustomobject]@{ Source = $bundledGit } }
+  }
+  if ($gitExe) {
+    $pp = Join-Path $tmp 'prepublish'
+    New-Item -ItemType Directory -Force -Path (Join-Path $pp 'scripts') | Out-Null
+    Set-Content -Encoding UTF8 -LiteralPath (Join-Path $pp 'SKILL.md') -Value "---`nname: prepublish`ndescription: t`n---`n# t"
+    & $gitExe.Source -C $pp init -q 2>$null
+    & $gitExe.Source -C $pp -c user.email=t@t.local -c user.name=t add .
+    & $gitExe.Source -C $pp -c user.email=t@t.local -c user.name=t commit -q -m init
+    Set-Content -Encoding UTF8 -LiteralPath (Join-Path $pp 'scripts\.env') -Value 'DASHSCOPE_API_KEY=sk-prepubtest1234567890abcdefghijklmnop'
+    $outTxt = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -PrePublish -Path $pp 2>&1 | Out-String
+    $ppCode = $LASTEXITCODE
+    if ($ppCode -ne 1 -or $outTxt -notmatch '黑名单文件将被发布' -or $outTxt -notmatch 'scripts[\\/]\.env') {
+      Write-Host ("FAIL PrePublish 黑名单: exit=$ppCode"); $fail++
+    } else { Write-Host 'OK PrePublish 检出 .env 黑名单 + exit 1' }
+
+    # 51) PrePublish：移除 .env 后 → PASS + exit 0
+    Remove-Item -LiteralPath (Join-Path $pp 'scripts\.env') -Force
+    $outTxt2 = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -PrePublish -Path $pp 2>&1 | Out-String
+    $ppCode2 = $LASTEXITCODE
+    if ($ppCode2 -ne 0 -or $outTxt2 -notmatch '\[PASS\] 文件清单' -or $outTxt2 -notmatch '未发现泄露风险') {
+      Write-Host ("FAIL PrePublish 通过态: exit=$ppCode2"); $fail++
+    } else { Write-Host 'OK PrePublish 干净仓库 PASS + exit 0' }
+
+    # 52) PrePublish：与渲染参数冲突 → exit 2
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script -PrePublish -Path $pp -Json 2>$null
+    if ($LASTEXITCODE -ne 2) { Write-Host ("FAIL PrePublish 冲突: exit=$LASTEXITCODE"); $fail++ }
+    else { Write-Host 'OK PrePublish 参数冲突 exit 2' }
+  } else {
+    Write-Host 'SKIP PrePublish（未找到 git）'
+  }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

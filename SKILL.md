@@ -95,6 +95,26 @@ description: 对本地 skill 做静态安全审查：覆盖提示注入、反拒
 
 ## 检查技巧
 
+### Codex 对话内使用（用户无需记参数）
+
+用户在 Codex 里只需要说需求，不需要知道 `-PrePublish`、`-Brief` 等参数名；模型按场景自动选择参数组合。拿不准时先问用户目标，再选参数，不要要求用户背术语。
+
+| 用户说的话（示例） | 自动使用的参数 |
+|:---|:---|
+| 扫一下我装的所有技能 / 全部技能检查一遍 | `-AllInstalled` |
+| 这个技能安全吗 / 帮我看看 xxx 技能 | `-Path <目录>` |
+| 简单说说 / 用简报看下 xxx | `-Path <目录> -Brief` |
+| 发布到 GitHub 前检查 / 会不会泄露 api key / 有没有 .env / 有没有密钥文件 | `-Path <发布源目录> -PrePublish` |
+| 查 git 历史有没有泄露过密钥 | `-Path <目录> -GitHistory` |
+| 看完整明细 / 详细报告 | `-Path <目录> -Full` |
+| 查依赖漏洞 | `-Path <目录> -CheckCVE`（联网查询，离线自动降级） |
+| 结果存成 JSON / 报告文件 | `-Path <目录> -Json -Output <文件>` |
+| 标记这个技能已审：放行 / 拒绝 | `-MarkVerified allow|deny -Path <目录>` |
+| 误报太多，压一下 / 建立基线 | `-InitBaseline` 或 `-Baseline <文件>` |
+| 批量扫某个文件夹里的未安装技能 | `-Dir <技能文件夹>`（可加 `-Parallel`） |
+
+用户用词不必固定，模型按语义映射（如“发布前看看”“要传 GitHub 了”“有没有泄露密钥”都映射到 `-PrePublish`）；无法确定目标时反问一句，而不是要求用户背参数。
+
 优先用内置脚本做机械搜索，再人工判断语境。脚本自动完成：单遍读取、编码探测（UTF-8/UTF-16/GBK）、语境标注（code/config/doc/data）、base64 载荷解码复查、多行恶意特征、依赖锁定检查、frontmatter 校验、.env 凭据检查（值隐藏）、符号链接越界、Python AST 与轻量污点、JS 行为启发式（动态执行/外部进程/网络调用）、JSON 输出（明细带 OWASP Agentic Skills 分类映射）、退出码。
 
 ```powershell
@@ -122,6 +142,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Dir <技�
 # 人工裁决后写入已审记录（仅完整扫描可写；写入技能根目录下 .verified/，尊重 CODEX_HOME）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified allow -Path <技能目录>
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified deny -Path <技能目录>
+
+# 发布前门禁检查（黑名单文件 + 内容疑似密钥 + git 历史疑似密钥；只提醒不拦截，exit 0=通过 / 1=有风险 / 2=参数错误）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <发布源目录> -PrePublish
 
 # 可选：联网查已锁定依赖的已知漏洞（OSV.dev；离线自动降级）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <目录> -CheckCVE

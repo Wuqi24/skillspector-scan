@@ -70,6 +70,8 @@
   关闭可选外部扫描器适配层（aguara / skill-scanner；默认自动探测，缺失则 SKIP）
 .PARAMETER MarkVerified
   显式写入已审记录：allow|deny，必须与 -Path 配对；禁止与简报/导出参数同用
+.PARAMETER PrePublish
+  发布前门禁检查：黑名单文件（.env/密钥文件）+ 内容疑似密钥 + git 历史疑似密钥；只提醒不拦截（exit 0=通过 / 1=有风险 / 2=参数或环境错误）
 #>
 [CmdletBinding()]
 param(
@@ -98,7 +100,8 @@ param(
   [switch]$RegistryStats,
   [switch]$CheckDeps,
   [switch]$NoExt,
-  [ValidateSet('allow', 'deny')][string]$MarkVerified
+  [ValidateSet('allow', 'deny')][string]$MarkVerified,
+  [switch]$PrePublish
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,7 +109,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $skillName = 'skillspector-scan'
-$scannerVersion = '2.3.0'
+$scannerVersion = '2.4.0'
 $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
 # 自扫豁免哨兵：随脚本分发；修改脚本无需更新此常量，改名目录/复制公开文件无法伪造完整扫描器
 $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
@@ -119,8 +122,8 @@ $selfCoreFiles = @(
 # __SELF_HASHES_BEGIN__
 # 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
 $SelfHashes = @{
-  'SKILL.md' = 'B9C12AFDE624B8DCA08AF34BAAF5ECA954083E876F7A0E562855F599A05CF640'
-  'README.md' = '62DC0B57A7EA1284C1984E8EDCFF34AB46A448E2AA73C986E58D0E5EE885EEAA'
+  'SKILL.md' = 'C486370F20ED0BD9C6F1AEE1D84EFC437D0E180D9BDB1D32D5AA23E66ABD72F5'
+  'README.md' = '44EAABB35C04D02FDD6B1DBD32C76243934C4E653F8F0B3FA8CEED32C1125EA2'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
@@ -129,7 +132,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '088846E275B856A33EB1F1661481D0CF43211FF2E8D36D0EA33504FFDA98C7D1'
+  'scripts/test.ps1' = '7309DF509D1FDFDE95FAAAECDF05D7FFF6EB68953A1B0D4F2D6B7C257703416A'
 }
 # __SELF_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
@@ -2256,6 +2259,124 @@ function Get-VerificationText {
   }
 }
 
+function Invoke-PrePublishCheck {
+  # 发布前门禁：黑名单文件 + 内容疑似密钥 + git 历史疑似密钥；只提醒不拦截。
+  # git 不可用/非 git 仓库时历史检查显式 SKIP（不静默跳过），文件清单按目录内全部文件兜底。
+  param([string]$target)
+  if (-not (Test-Path -LiteralPath $target -PathType Container)) { throw '目标必须是目录' }
+  $lines = New-Object System.Collections.ArrayList
+  [void]$lines.Add('==== Pre-Publish 检查: ' + $target + ' ====')
+  $failCount = 0
+  $skipCount = 0
+
+  # 1) 文件清单：git 仓库 = 已跟踪 + 未跟踪（非忽略）且位于目标目录下；非 git = 目录内全部文件（排除 .git 内部）
+  $git = Get-GitExe
+  $repoRoot = $null
+  $prefix = $null
+  $candidateFiles = New-Object System.Collections.ArrayList
+  if ($git) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $repoRoot = (& $git -C $target rev-parse --show-toplevel 2>$null | Select-Object -First 1)
+    $ErrorActionPreference = $prevEap
+  }
+  if ($repoRoot) {
+    $prefix = (Resolve-Path -LiteralPath $repoRoot).Path.TrimEnd('\') + '\'
+    $tracked = @(& $git -C $repoRoot ls-files 2>$null)
+    $untracked = @(& $git -C $repoRoot ls-files --others --exclude-standard 2>$null)
+    foreach ($rel in @($tracked + $untracked | Sort-Object -Unique)) {
+      $full = Join-Path $repoRoot ($rel -replace '/', '\')
+      if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $full)) {
+        [void]$candidateFiles.Add($full)
+      }
+    }
+  } else {
+    foreach ($fi in @(Get-ChildItem -Recurse -File -LiteralPath $target -ErrorAction SilentlyContinue)) {
+      if ($fi.FullName -notmatch '\\\.git\\') { [void]$candidateFiles.Add($fi.FullName) }
+    }
+  }
+  $checkedFiles = @($candidateFiles).Count
+
+  # 2) 黑名单文件（按相对路径/文件名匹配）
+  $blocked = New-Object System.Collections.ArrayList
+  foreach ($full in @($candidateFiles)) {
+    $rel = if ($repoRoot) { $full.Substring($prefix.Length) } else { $full.Substring($target.Length).TrimStart('\') }
+    $leaf = Split-Path $rel -Leaf
+    $isBlocked = $false
+    if ($rel -match '(^|[\\/])\.verified[\\/]') { $isBlocked = $true }
+    elseif ($leaf -match '^\.env($|\.)|\.pem$|\.key$|^id_rsa|^id_ed25519|\.pfx$|\.p12$|^credentials|\.secret$') { $isBlocked = $true }
+    if ($isBlocked) { [void]$blocked.Add($rel) }
+  }
+  if (@($blocked).Count -eq 0) {
+    [void]$lines.Add(('[PASS] 文件清单: 无黑名单文件（检查 ' + $checkedFiles + ' 个将发布文件）'))
+  } else {
+    $failCount += @($blocked).Count
+    foreach ($b in @($blocked | Sort-Object -Unique)) {
+      [void]$lines.Add(('[FAIL] 文件清单: 黑名单文件将被发布: ' + $b))
+    }
+  }
+
+  # 3) 内容疑似密钥：复用完整扫描引擎，只取 CRED 命中
+  $r = Invoke-TargetScan $target
+  if ($r.recommendation -eq '扫描失败') { throw ('内容扫描失败: ' + (@($r.errors) -join '; ')) }
+  $cred = @($r.findings | Where-Object { $_.id -eq 'CRED' -and -not $_.doc })
+  if ($cred.Count -eq 0) {
+    [void]$lines.Add('[PASS] 内容: 未发现疑似密钥')
+  } else {
+    $failCount += $cred.Count
+    foreach ($c in $cred) {
+      [void]$lines.Add(('[FAIL] 内容: ' + $c.text + ' | ' + $c.file + ':' + $c.line))
+    }
+  }
+
+  # 4) git 历史疑似密钥（复用与 -GitHistory 相同的密钥模式；不可用时显式 SKIP）
+  if (-not $git) {
+    [void]$lines.Add('[SKIP] git 历史: 未找到 git，无法检查历史残留')
+    $skipCount++
+  } elseif (-not $repoRoot) {
+    [void]$lines.Add('[SKIP] git 历史: 目标不在 git 仓库内，无法检查历史残留（文件清单已按全目录检查）')
+    $skipCount++
+  } else {
+    $histCred = New-Object System.Collections.ArrayList
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $secRe = 'sk-[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN[^-]+PRIVATE\s+KEY-----|xox[baprs]-[A-Za-z0-9\-]{20,}'
+      $seenSecret = @{}
+      foreach ($line in @(& $git -C $repoRoot log --all -p -n $GitDepth 2>$null)) {
+        foreach ($m in [regex]::Matches($line, $secRe)) {
+          if (-not $seenSecret.ContainsKey($m.Value)) {
+            $seenSecret[$m.Value] = $true
+            [void]$histCred.Add((Get-MaskedText $m.Value))
+          }
+        }
+      }
+    } catch {
+      [void]$lines.Add('[SKIP] git 历史: 检查失败: ' + $_.Exception.Message)
+      $skipCount++
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
+    if (@($histCred).Count -eq 0) {
+      [void]$lines.Add('[PASS] git 历史: 最近 ' + $GitDepth + ' 次提交未发现疑似密钥')
+    } else {
+      $failCount += @($histCred).Count
+      foreach ($h in @($histCred)) {
+        [void]$lines.Add(('[FAIL] git 历史: 疑似密钥（值已隐藏）: ' + $h))
+      }
+    }
+  }
+
+  if ($failCount -gt 0) {
+    [void]$lines.Add(('结论: 发现 ' + $failCount + ' 项风险，不建议推送（仅提醒，不自动拦截）'))
+  } else {
+    $skipTxt = if ($skipCount -gt 0) { ('；' + $skipCount + ' 项未检查（见上）') } else { '' }
+    [void]$lines.Add(('结论: 未发现泄露风险（检查 ' + $checkedFiles + ' 个文件' + $skipTxt + '）'))
+  }
+  foreach ($l in $lines) { Write-Output $l }
+  if ($failCount -gt 0) { exit 1 }
+}
+
 function Get-BriefRiskSummary {
   param($r)
   $risk = @($r.findings | Where-Object { -not $_.doc -and -not (Get-BriefView $_).hide })
@@ -2427,6 +2548,23 @@ function Render-BriefOne {
 if ($Score -and -not $Brief) {
   [Console]::Error.WriteLine('错误: -Score 仅在 -Brief 模式下有效')
   exit 2
+}
+if ($PrePublish) {
+  if (-not $Path) {
+    [Console]::Error.WriteLine('错误: -PrePublish 必须与 -Path <目录> 配对使用')
+    exit 2
+  }
+  if ($AllInstalled -or $Dir -or $Json -or $Output -or $Brief -or $Score -or $Interactive -or $Parallel -or $Worker -or $MarkVerified -or $CheckDeps -or $RegistryStats -or $RebakeSelfHashes -or $InitBaseline -or $Baseline -or $ShowSuppressed) {
+    [Console]::Error.WriteLine('错误: -PrePublish 不能与 -AllInstalled/-Dir/-Json/-Output/-Brief/-Score/-Interactive/-Parallel/-Worker/-MarkVerified/-CheckDeps/-RegistryStats/-RebakeSelfHashes/-InitBaseline/-Baseline/-ShowSuppressed 同时使用')
+    exit 2
+  }
+  try {
+    Invoke-PrePublishCheck (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    exit 0
+  } catch {
+    [Console]::Error.WriteLine('错误: ' + $_.Exception.Message)
+    exit 2
+  }
 }
 if ($MarkVerified) {
   if (-not $Path) {

@@ -27,6 +27,7 @@
 - 依赖锁定与离线依赖分析（来源白名单、拼写欺诈、安装脚本钩子、依赖数阈值）
 - 简报模式（`-Brief`）：行为概要 → 最坏情况 TOP3 → 详细发现 → 参考发现 → 依赖风险，每条命中带“事实 + 推断”
 - 已审记录（`-MarkVerified`）：文件 SHA-256 清单 + 结论 + 日期，内容变化自动提示结论失效
+- 发布前门禁（`-PrePublish`）：黑名单文件（.env/密钥文件）+ 内容疑似密钥 + git 历史疑似密钥，只提醒不拦截
 - 可选外部扫描器适配：检测到 `aguara` / `skill-scanner` 时自动调用并合并命中（`EXT_AGUARA`/`EXT_SKILLSCANNER`），缺失 SKIP 不报错，`-NoExt` 关闭
 - JSON 报告含 `engines` 检查器状态（regex/multi/lexer/python_ast/js/deps/osv/git_history/manifest/external_*，on/skipped/disabled/degraded）
 - JSON 输出（`-Json`）、批量（`-AllInstalled`/`-Dir`）、并行（`-Parallel`）、基线误报抑制（`-Baseline`）、依赖检查（`-CheckDeps`）
@@ -65,6 +66,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 
 # 人工裁决后写入已审记录（仅完整扫描可写，写入技能根 .verified/；尊重 CODEX_HOME，回退 ~/.codex/skills/.verified/）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified allow -Path <技能目录>
+
+# 发布前门禁检查（黑名单文件 + 内容疑似密钥 + git 历史；exit 0=通过 / 1=有风险 / 2=参数错误）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <发布源目录> -PrePublish
 
 # 基线抑制误报
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -InitBaseline
