@@ -675,13 +675,13 @@ function Test-SelfSkill {
       if ($line -match '^name:\s*[''"]?skillspector-scan[''"]?\s*$') { $nameOk = $true; break }
     }
     if (-not $nameOk) { return $false }
-    $scanScript = Join-Path $scanPath 'scripts\scan.ps1'
+    $scanScript = Join-Path $scanPath 'scripts/scan.ps1'
     if (-not (Test-Path -LiteralPath $scanScript)) { return $false }
     if (-not (Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript).Contains($SelfMarker)) { return $false }
     # 2) 文件集白名单：核心文件集之外出现任何文件 → 不豁免（堵“整包复制+新增恶意文件”绕过）
     $relPaths = @()
     $fixtureManifest = @()
-    $mfPath = Join-Path $scanPath 'test\fixtures\MANIFEST.json'
+    $mfPath = Join-Path $scanPath 'test/fixtures/MANIFEST.json'
     if (Test-Path -LiteralPath $mfPath) {
       try {
         $mf = Get-Content -Raw -Encoding UTF8 -LiteralPath $mfPath | ConvertFrom-Json
@@ -706,7 +706,7 @@ function Test-SelfSkill {
     # 3) 哈希白名单：校验除 scan.ps1 外的核心文件；-SelfDev 跳过哈希（保留文件集校验），供开发期使用
     if (-not $SelfDev) {
       foreach ($k in @($SelfHashes.Keys)) {
-        $hp = Join-Path $scanPath ($k -replace '/', '\')
+        $hp = Join-Path $scanPath $k
         if (-not (Test-Path -LiteralPath $hp)) { return $false }
         if ((Get-NormalizedFileHash $hp) -ne $SelfHashes[$k]) { return $false }
       }
