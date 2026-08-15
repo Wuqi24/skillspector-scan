@@ -664,20 +664,20 @@ function Test-SelfSkill {
   # 已知局限：开源无外部信任锚，高对抗整包伪造者仍可复制全部内容；文件集白名单堵住“整包复制+新增文件”绕过
   param([string]$scanPath)
   try {
-    if ((Split-Path $scanPath -Leaf) -ne $skillName) { [Console]::Error.WriteLine('[DBG-SELF] leaf=' + (Split-Path $scanPath -Leaf)); return $false }
+    if ((Split-Path $scanPath -Leaf) -ne $skillName) { return $false }
     $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
-    if (-not $item.PSIsContainer) { [Console]::Error.WriteLine('[DBG-SELF] not container'); return $false }
+    if (-not $item.PSIsContainer) { return $false }
     # 1) 结构指纹：SKILL.md frontmatter name + scan.ps1 哨兵常量
     $skillMd = Join-Path $scanPath 'SKILL.md'
-    if (-not (Test-Path -LiteralPath $skillMd)) { [Console]::Error.WriteLine('[DBG-SELF] no SKILL.md'); return $false }
+    if (-not (Test-Path -LiteralPath $skillMd)) { return $false }
     $nameOk = $false
     foreach ($line in @(Get-Content -Encoding UTF8 -LiteralPath $skillMd -TotalCount 8)) {
       if ($line -match '^name:\s*[''"]?skillspector-scan[''"]?\s*$') { $nameOk = $true; break }
     }
-    if (-not $nameOk) { [Console]::Error.WriteLine('[DBG-SELF] name fail'); return $false }
+    if (-not $nameOk) { return $false }
     $scanScript = Join-Path $scanPath 'scripts/scan.ps1'
-    if (-not (Test-Path -LiteralPath $scanScript)) { [Console]::Error.WriteLine('[DBG-SELF] no scan.ps1'); return $false }
-    if (-not (Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript).Contains($SelfMarker)) { [Console]::Error.WriteLine('[DBG-SELF] no marker'); return $false }
+    if (-not (Test-Path -LiteralPath $scanScript)) { return $false }
+    if (-not (Get-Content -Raw -Encoding UTF8 -LiteralPath $scanScript).Contains($SelfMarker)) { return $false }
     # 2) 文件集白名单：核心文件集之外出现任何文件 → 不豁免（堵“整包复制+新增恶意文件”绕过）
     $relPaths = @()
     $fixtureManifest = @()
@@ -695,24 +695,23 @@ function Test-SelfSkill {
       if ($rel -eq 'test/fixtures/MANIFEST.json') { $relPaths += $rel; continue }
       if ($rel -like 'test/fixtures/*') {
         # 官方测试夹具目录：仅接受 MANIFEST 收录的文件（防“新增夹具名义”绕过）
-        if ($fixtureManifest -notcontains $rel) { [Console]::Error.WriteLine('[DBG-SELF] fixture not in manifest: ' + $rel); return $false }
+        if ($fixtureManifest -notcontains $rel) { return $false }
         continue
       }
-      if ($selfCoreFiles -notcontains $rel) { [Console]::Error.WriteLine('[DBG-SELF] extra file: ' + $rel); return $false }
+      if ($selfCoreFiles -notcontains $rel) { return $false }
       $relPaths += $rel
     }
     foreach ($core in $selfCoreFiles) {
-      if ($relPaths -notcontains $core) { [Console]::Error.WriteLine('[DBG-SELF] missing core: ' + $core); return $false }
+      if ($relPaths -notcontains $core) { return $false }
     }
     # 3) 哈希白名单：校验除 scan.ps1 外的核心文件；-SelfDev 跳过哈希（保留文件集校验），供开发期使用
     if (-not $SelfDev) {
       foreach ($k in @($SelfHashes.Keys)) {
         $hp = Join-Path $scanPath $k
-        if (-not (Test-Path -LiteralPath $hp)) { [Console]::Error.WriteLine('[DBG-SELF] hash path missing: ' + $k); return $false }
-        if ((Get-NormalizedFileHash $hp) -ne $SelfHashes[$k]) { [Console]::Error.WriteLine('[DBG-SELF] hash mismatch: ' + $k); return $false }
+        if (-not (Test-Path -LiteralPath $hp)) { return $false }
+        if ((Get-NormalizedFileHash $hp) -ne $SelfHashes[$k]) { return $false }
       }
     }
-    [Console]::Error.WriteLine('[DBG-SELF] PASS')
     return $true
   } catch {
     return $false
