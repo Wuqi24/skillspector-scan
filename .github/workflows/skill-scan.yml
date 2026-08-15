@@ -1,0 +1,77 @@
+name: skillspector-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      skill_path:
+        description: 要扫描的技能路径（相对仓库根，默认整个仓库）
+        required: false
+        default: '.'
+      mode:
+        description: 扫描模式
+        required: false
+        default: prepublish
+        type: choice
+        options:
+          - prepublish
+          - full
+  push:
+    paths:
+      - 'SKILL.md'
+      - 'scripts/**'
+      - 'rules/**'
+      - 'references/**'
+      - 'agents/**'
+      - 'data/**'
+      - 'LICENSE'
+      - 'README.md'
+  pull_request:
+    paths:
+      - 'SKILL.md'
+      - 'scripts/**'
+      - 'rules/**'
+      - 'references/**'
+      - 'agents/**'
+      - 'data/**'
+      - 'LICENSE'
+      - 'README.md'
+  workflow_call:
+    inputs:
+      skill_path:
+        type: string
+        required: false
+        default: '.'
+      mode:
+        type: string
+        required: false
+        default: 'prepublish'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run skillspector-scan
+        shell: pwsh
+        run: |
+          $path = "${{ inputs.skill_path }}"
+          if ([string]::IsNullOrWhiteSpace($path)) { $path = '.' }
+          $mode = "${{ inputs.mode }}"
+          if ($mode -eq 'full') {
+            pwsh -NoProfile -File scripts/scan.ps1 -Path $path 2>&1 | Tee-Object -FilePath report.txt
+          } else {
+            pwsh -NoProfile -File scripts/scan.ps1 -Path $path -PrePublish 2>&1 | Tee-Object -FilePath report.txt
+          }
+          exit $LASTEXITCODE
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skillspector-report
+          path: report.txt

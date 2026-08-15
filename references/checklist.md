@@ -190,3 +190,18 @@
 - 关联规则只做“共存”判断（如凭证读取+回环访问），不推断数据流；correlation finding 的 `source_finding_id` 必须能追溯到原始文件证据
 - `-MarkVerified allow|deny` 仅对 `analysis_status=complete` 的扫描生效；已审记录按文件 SHA-256 清单 + 规则/配置/包表哈希比对，任何变化都会使旧结论失效提示
 - 规则来自冻结注册表 `rules/rules.yaml`（36 唯一/40 条目 + 4 hints + 11 projections），不支持联网更新或运行时收录；人工修改规则后旧审核自动失效
+
+## 架构不变量回归（Phase 1，test.ps1 T53-T60）
+
+架构护栏以回归测试固化，不引入独立 Guard 子系统；未来 06_方案1（评分语义去污染）必须在这些测试保护下改动。
+
+| 不变量 | 含义 | 测试 |
+|---|---|---|
+| I/J | 每个 Finding 有完整证据（file/line/text/context），source_finding_id 可追溯 | T53 |
+| K | 同目标 + 同版本 + 同规则 → finding_id 与证据字段确定性 | T54 |
+| L | 文件遍历顺序不影响语义结果 | T55 |
+| F | Analyzer 失败必须可见，不得静默成为 SAFE | T56 |
+| G/H | Skipped/Degraded 状态必须可见，不得伪造 SAFE | T57 |
+| B/C | Ranking/Decision（简报投影等）不得修改 Evidence 字段 | T58 |
+| A | Detector/Policy 不直接决定 Score（correlation 不计分） | T59 |
+| D/E | Report/Brief 渲染不得创建新的 Finding | T60 |

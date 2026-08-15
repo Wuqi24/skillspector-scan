@@ -1,6 +1,6 @@
 ---
 name: skillspector-scan
-description: 对本地 skill 做静态安全审查：覆盖提示注入、反拒答/越狱、外部指令来源（OWASP AST05）、数据外泄与污点外传、供应链、代码级危险调用（exec/eval/subprocess）、SSRF、系统提示泄露、记忆投毒、过度自主权、工具滥用、触发词滥用、MCP 投毒、Agent 窥探、提权/危险操作等 16+ 类风险；内置脚本支持逐文件单次读取 + 专项多阶段检查、编码探测、语境降噪、注释词法识别、依赖锁定与离线依赖分析、Python/JS 行为分析（AST/轻量污点）、base64 载荷解码复查、符号链接越界、git 历史密钥、manifest 变化（rug-pull）检测、baseline 误报抑制、并行批量、JSON 输出与 OSV 漏洞查询；简报模式（-Brief）输出“事实+推断”两段式报告（行为概要/TOP3/关联/参考/依赖分区，风险标签为自动推断不替代人工裁决），并支持已审记录（-MarkVerified，文件 SHA-256 清单比对、变化即失效）。当用户要求“扫描这个 skill”“检查/评估某个 skill 或技能的安全性”“这个技能安全吗”“用 SkillSpector 扫描”时使用，也适用于安装第三方 skill 前的审查。
+description: 对本地 skill 做静态安全审查：覆盖提示注入、反拒答/越狱、外部指令来源（OWASP AST05）、数据外泄与污点外传、供应链、代码级危险调用（exec/eval/subprocess）、SSRF、系统提示泄露、记忆投毒、过度自主权、工具滥用、触发词滥用、MCP 投毒、Agent 窥探、提权/危险操作等 16+ 类风险；内置脚本支持逐文件单次读取 + 专项多阶段检查、编码探测、语境降噪、注释词法识别、依赖锁定与离线依赖分析、Python/JS 行为分析（AST/轻量污点）、base64 载荷解码复查、符号链接越界、git 历史密钥、manifest 变化（rug-pull）检测、baseline 误报抑制、并行批量、JSON 输出与 OSV 漏洞查询；简报模式（-Brief）输出“事实+推断”两段式报告（行为概要/TOP3/关联/参考/依赖分区，风险标签为自动推断不替代人工裁决），并支持已审记录（-MarkVerified，文件 SHA-256 清单比对、变化即失效）与 Inspection Ledger（inspection_run_id + inspection[] + reason_code，旁路记录不改变评分）。当用户要求“扫描这个 skill”“检查/评估某个 skill 或技能的安全性”“这个技能安全吗”“用 SkillSpector 扫描”时使用，也适用于安装第三方 skill 前的审查。
 ---
 
 # SkillSpector 扫描
@@ -201,12 +201,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技�
 - `.git` 内部文件不参与常规扫描；需要时用 `-GitHistory` 单独查历史中的密钥
 - 可选交叉验证：若本机已安装官方 skillspector CLI，可运行 `skillspector scan <路径> --no-llm` 获取确定性报告；未安装则跳过，本技能不要求安装任何工具
 
+## Inspection Ledger（Phase 4B）
+
+- JSON 顶层输出 `audit.inspection_run_id`（hash(target+scanner+ruleset+policy+timestamp)）与 `inspection[]`（engine 生命周期条目）
+- 每条目含 `entry_id / run_id / engine / rule_id / status / reason_code / coverage / started_at / finished_at / error`
+- `reason_code` 为冻结枚举（见 `contracts/reason-codes.md`），`skipped/failed/degraded` 必须带原因，不得解释为 clean
+- Ledger 是**审计历史层**：旁路派生，不产生 Finding、不修改 Evidence、不改变评分；finding/evidence 不携带 run/entry 字段
+- 当前 `evidence.inspection_id` 仍为确定性占位（升级为 ledger entry_id 属后续待办）
+
 ## 误报排除（必读）
 
 命中不一定算问题。脚本会按语境标注，以下语境视为文档/示例，不计分，但可在报告中注明“已排除（文档示例）”：
 
 - .md 文档、Markdown 围栏代码块、README（脚本标为 doc 语境）——但技能自身 SKILL.md 正文中的指令类命中（覆盖指令/反拒答/记忆投毒/过度自主权/触发词/外部指令来源）除外，视为真实信号
-- 对风险类别本身的描述（扫描技能自己的 SKILL.md / references，包括本技能自身，脚本对 skillspector-scan 目录自动标为文档语境——须通过三层内容指纹：目录名+frontmatter name+哨兵、12 文件集白名单、核心文件哈希，任一不满足不豁免）
+- 对风险类别本身的描述（扫描技能自己的 SKILL.md / references，包括本技能自身，脚本对 skillspector-scan 目录自动标为文档语境——须通过三层内容指纹：目录名+frontmatter name+哨兵、19 文件集白名单、核心文件哈希，任一不满足不豁免）
 - 否定句示例（“不要用 rm -rf”“不要做 X”）
 - 反引号包裹的搜索模式或表格里的模式列表（如 scan-patterns.md 这类参考文件）
 

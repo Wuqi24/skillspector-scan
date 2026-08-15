@@ -638,8 +638,8 @@ subprocess.run(os.environ["CMD"], shell=True)
   $fakeBin = Join-Path $tmp 'fakebin'
   New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
   Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fakeBin 'aguara.cmd') -Value ('@echo off' + "`n" + 'echo {"findings":[{"severity":5,"rule_id":"TEST_INJECT","description":"prompt injection test","file_path":"SKILL.md","line":3}]}')
-  $oldPath = $env:PATH
-  $env:PATH = $fakeBin + ';' + $env:PATH
+  $oldAguara = $env:SKILLSPECTOR_AGUARA
+  $env:SKILLSPECTOR_AGUARA = Join-Path $fakeBin 'aguara.cmd'
   try {
     $r = Invoke-ScanJson $evil
     $ext = @($r.Findings | Where-Object { $_.id -eq 'EXT_AGUARA' })
@@ -654,7 +654,7 @@ subprocess.run(os.environ["CMD"], shell=True)
       Write-Host ("FAIL -NoExt: ext=" + $extN.Count + " aguara=" + $egN.external_aguara); $fail++
     } else { Write-Host 'OK -NoExt（外部扫描器关闭）' }
   } finally {
-    $env:PATH = $oldPath
+    $env:SKILLSPECTOR_AGUARA = $oldAguara
   }
 
   # 45) Scope：单技能 -Path → 1 个 skill Target，报告含 Target Type/Skill 块
@@ -765,6 +765,307 @@ subprocess.run(os.environ["CMD"], shell=True)
   } else {
     Write-Host 'SKIP PrePublish（未找到 git）'
   }
+
+  # ============================================================
+  # Phase 1：架构不变量回归（T53-T60；只读断言，不改扫描逻辑）
+  # ============================================================
+
+  # 53) 不变量 I/J：全量 Finding → Evidence → Provenance 可追溯
+  $r53 = Invoke-ScanJson $evil
+  $ids53 = @($r53.Findings | ForEach-Object { $_.finding_id })
+  $bad53 = @($r53.Findings | Where-Object {
+    -not $_.finding_id -or -not $_.file -or -not $_.text -or -not $_.context -or $null -eq $_.line
+  })
+  foreach ($fd53 in $r53.Findings) {
+    foreach ($sid53 in @($fd53.source_finding_id)) {
+      if ($null -eq $sid53) { continue }
+      if ($ids53 -notcontains $sid53) { $bad53 += $fd53; break }
+    }
+  }
+  if ($bad53.Count -gt 0) { Write-Host 'FAIL T53 Finding→Evidence→Provenance 可追溯'; $fail++ }
+  else { Write-Host 'OK T53 全量 Finding 证据/溯源字段完整' }
+
+  # 54) 不变量 K：确定性（同目标两次扫描 → finding_id 与证据字段一致）
+  $r54a = Invoke-ScanJson $evil
+  $r54b = Invoke-ScanJson $evil
+  $sig54 = { param($r) (@($r.Findings) | Sort-Object finding_id | ForEach-Object {
+      "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $_.finding_id, $_.file, $_.line, $_.column, $_.text, $_.context, $_.confidence, (@($_.source_finding_id) -join ',')
+    }) -join "`n" }
+  $s54a = & $sig54 $r54a
+  $s54b = & $sig54 $r54b
+  if ($s54a -cne $s54b) { Write-Host 'FAIL T54 证据确定性'; $fail++ }
+  else { Write-Host 'OK T54 同目标两次扫描证据完全一致' }
+
+  # 55) 不变量 L：文件遍历顺序不影响语义结果
+  $ordA = Join-Path $tmp 'order-a'
+  $ordB = Join-Path $tmp 'order-b'
+  New-Item -ItemType Directory -Force -Path (Join-Path $ordA 'scripts'),(Join-Path $ordB 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordA 'SKILL.md') -Value "---`nname: order-a`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordB 'SKILL.md') -Value "---`nname: order-b`ndescription: t`n---`n# t"
+  $py1 = @'
+import subprocess
+subprocess.run(["curl", "-k", "https://example.com"])
+'@
+  $py2 = @'
+import os
+print(os.getenv("HOME"))
+'@
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordA 'scripts\a.py') -Value $py1
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordA 'scripts\b.py') -Value $py2
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordB 'scripts\b.py') -Value $py2
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $ordB 'scripts\a.py') -Value $py1
+  $r55a = Invoke-ScanJson $ordA
+  $r55b = Invoke-ScanJson $ordB
+  # 签名按语义键排序（id|rel|line|text），不依赖 finding_id：finding_id 含 target identity，
+  # 不同目录名会使其排序不同，与“文件顺序不影响语义结果”的断言目标无关
+  $sig55 = { param($r, $root) (@($r.Findings) | ForEach-Object {
+      $rel = $_.file
+      if ($rel.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $rel = $rel.Substring($root.Length) }
+      "{0}|{1}|{2}|{3}|{4}" -f $_.id, $rel, $_.line, $_.text, $_.context
+    } | Sort-Object) -join "`n" }
+  $s55a = & $sig55 $r55a $ordA
+  $s55b = & $sig55 $r55b $ordB
+  if ($s55a -cne $s55b -or $r55a.Score -ne $r55b.Score) { Write-Host 'FAIL T55 文件顺序影响结果'; $fail++ }
+  else { Write-Host 'OK T55 文件遍历顺序无关（finding 集与 score 一致）' }
+
+  # 56) 不变量 F：Analyzer failed 必须可见，不得静默成为 SAFE
+  $broken = Join-Path $tmp 'broken-py'
+  New-Item -ItemType Directory -Force -Path (Join-Path $broken 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $broken 'SKILL.md') -Value "---`nname: broken-py`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $broken 'scripts\broken.py') -Value ("def f(:" + "`n" + "  pass")
+  $r56 = Invoke-ScanJson $broken
+  $eg56 = $r56.Target.engines.python_ast
+  if ($eg56 -eq 'skipped') {
+    Write-Host 'SKIP T56（无 python 环境，AST 不可用）'
+  } else {
+    $failVisible56 = ($r56.Target.errors.Count -gt 0) -or ($eg56 -eq 'degraded') -or ($r56.Target.analysis_status -in @('partial', 'failed'))
+    $silentSafe56 = ($r56.Target.analysis_status -eq 'complete') -and ($r56.Target.errors.Count -eq 0) -and ($r56.Score -eq 0)
+    if (-not $failVisible56 -or $silentSafe56) {
+      Write-Host ("FAIL T56 解析失败静默: eg=$eg56 status=$($r56.Target.analysis_status) errs=$($r56.Target.errors.Count) score=$($r56.Score)"); $fail++
+    } else { Write-Host 'OK T56 解析失败可见（非静默 SAFE）' }
+  }
+
+  # 57) 不变量 G/H：Skipped/Degraded 状态必须可见，不伪造 SAFE
+  $assetOnly = Join-Path $tmp 'asset-only'
+  New-Item -ItemType Directory -Force -Path $assetOnly | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $assetOnly 'SKILL.md') -Value "---`nname: asset-only`ndescription: t`n---`n# t"
+  [System.IO.File]::WriteAllBytes((Join-Path $assetOnly 'img.png'), (New-Object byte[] 2048))
+  $r57a = Invoke-ScanJson $assetOnly
+  $r57b = Invoke-ScanJson $evil @('-NoAst')
+  if ($r57a.Target.skipped.Count -eq 0 -or $r57b.Target.engines.python_ast -notin @('skipped', 'disabled')) {
+    Write-Host ("FAIL T57 skipped 可见: skip=$($r57a.Target.skipped.Count) ast=$($r57b.Target.engines.python_ast)"); $fail++
+  } else { Write-Host 'OK T57 skipped/disabled 状态在报告中可见' }
+
+  # 58) 不变量 B/C：Ranking/Decision 不修改 Evidence（普通 vs 简报同 finding 证据一致）
+  $r58n = Invoke-ScanJson $evil
+  $ev58 = { param($f) ("{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $f.id, $f.file, $f.line, $f.column, $f.text, $f.context, $f.confidence, (@($f.source_finding_id) -join ',')) }
+  $map58 = @{}
+  foreach ($f in $r58n.Findings) { $map58[$f.finding_id] = & $ev58 $f }
+  $r58b = Invoke-BriefJson $evil
+  $bad58 = @($r58b.Target.findings | Where-Object { $map58.ContainsKey($_.finding_id) -and $map58[$_.finding_id] -cne (& $ev58 $_) })
+  if ($bad58.Count -gt 0) { Write-Host 'FAIL T58 简报改变证据字段'; $fail++ }
+  else { Write-Host 'OK T58 简报投影不修改 Evidence（同 finding 证据一致）' }
+
+  # 59) 不变量 A：Detector/Policy 不直接决定 Score（correlation 不计分）
+  $r59 = Invoke-BriefJson $corr
+  $cf59 = @($r59.Target.correlation_findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })[0]
+  $inTop59 = @($r59.Target.top3 | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' }).Count
+  if (-not $cf59 -or $cf59.score -ne $false -or $inTop59 -gt 0) {
+    Write-Host ("FAIL T59 correlation 计分/入TOP3: score=$($cf59.score)"); $fail++
+  } else { Write-Host 'OK T59 correlation 不计分不进 TOP3（score=false）' }
+
+  # 60) 不变量 D/E：Report/Brief 渲染不得创建新的 Finding
+  $r60n = Invoke-ScanJson $evil
+  $ids60 = @($r60n.Findings | ForEach-Object { $_.finding_id })
+  $r60b = Invoke-BriefJson $evil
+  $knownAdds60 = @($r60b.Target.correlation_findings | ForEach-Object { $_.finding_id })
+  $bad60b = @($r60b.Target.findings | Where-Object { $ids60 -notcontains $_.finding_id -and $knownAdds60 -notcontains $_.finding_id })
+  $txt60 = Join-Path $tmp 'full60.txt'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $evil -Full -Output $txt60 2>$null
+  $t60 = Get-Content -Raw -Encoding UTF8 -LiteralPath $txt60 -ErrorAction SilentlyContinue
+  $idsText60 = @([regex]::Matches($t60, '•\s*\[[^\]]+\]\s*([A-Z0-9_]+)') | ForEach-Object { $_.Groups[1].Value })
+  $bad60t = @($idsText60 | Where-Object { $ids60 -notcontains $_ })
+  if ($bad60b.Count -gt 0 -or $bad60t.Count -gt 0) {
+    Write-Host ("FAIL T60 渲染新增 Finding: brief=$($bad60b.Count) text=$($bad60t.Count)"); $fail++
+  } else { Write-Host 'OK T60 Report/Brief 不创建 Finding（brief 子集 + 文本无新 id）' }
+
+  # 61) 规则成对夹具（rule-pairs）：positive 必产生风险信号，negative 不得产生风险信号
+  $fixtures61 = Join-Path $PSScriptRoot '..\test\fixtures'
+  $rulePairs61 = @(
+    @{ id = 'SC2' }, @{ id = 'E1' }, @{ id = 'E2' }, @{ id = 'CRED' }, @{ id = 'DC' },
+    @{ id = 'PE' }, @{ id = 'OBS' },
+    @{ id = 'INSTALL_HOOK'; depId = 'DEP_HOOK' },
+    @{ id = 'DEP_SOURCE'; depId = 'DEP_SOURCE' }
+  )
+  $pairFail61 = 0
+  foreach ($rp61 in $rulePairs61) {
+    $tid61 = if ($rp61.depId) { $rp61.depId } else { $rp61.id }
+    foreach ($side61 in @('positive', 'negative')) {
+      $dir61 = Join-Path $fixtures61 ('rule-pairs\{0}\{1}' -f $rp61.id, $side61)
+      $r61 = Invoke-BriefJson $dir61
+      $fHits61 = @($r61.Target.findings | Where-Object { -not $_.doc -and $_.id -eq $tid61 })
+      $dHits61 = @($r61.Target.dependency_findings | Where-Object { $_.id -eq $tid61 })
+      $sig61 = ($fHits61.Count -gt 0) -or ($dHits61.Count -gt 0)
+      $ok61 = if ($side61 -eq 'positive') { $sig61 } else { -not $sig61 }
+      if (-not $ok61) {
+        Write-Host ("FAIL T61 rule-pair {0}/{1}: signal={2}" -f $rp61.id, $side61, $sig61); $pairFail61++
+      }
+    }
+  }
+  if ($pairFail61 -gt 0) { $fail += $pairFail61 }
+  else { Write-Host 'OK T61 规则成对夹具（9 对：positive 必命中 / negative 无风险信号）' }
+
+  # 62) SSRF/network semantic fixture：canonical finding identity 稳定（地址分类 + projection + dedupe）
+  $ssrf62 = Join-Path $fixtures61 'semantic\SSRF-network-projection'
+  $r62 = Invoke-BriefJson $ssrf62
+  $byFile62 = @{}
+  foreach ($fd62 in @($r62.Target.findings | Where-Object { -not $_.doc })) {
+    $fn62 = Split-Path $fd62.file -Leaf
+    if (-not $byFile62.ContainsKey($fn62)) { $byFile62[$fn62] = New-Object System.Collections.ArrayList }
+    [void]$byFile62[$fn62].Add($fd62.id)
+  }
+  $expect62 = @{
+    '01-metadata-google.ps1' = @('SSRF')
+    '02-metadata-ip.ps1' = @('SSRF')
+    '03-localhost.ps1' = @('LOOPBACK_ACCESS')
+    '04-loopback-ip.ps1' = @('LOOPBACK_ACCESS')
+    '05-private-192.ps1' = @('INTERNAL_NET_CALL', 'SSRF')
+    '06-private-10.ps1' = @('INTERNAL_NET_CALL', 'SSRF')
+  }
+  $noInternal62 = @('01-metadata-google.ps1', '02-metadata-ip.ps1', '03-localhost.ps1', '04-loopback-ip.ps1')
+  $ssrfFail62 = 0
+  foreach ($k62 in $expect62.Keys) {
+    $ids62 = $byFile62[$k62]
+    foreach ($h62 in $expect62[$k62]) {
+      if (-not $ids62 -or $ids62 -notcontains $h62) { Write-Host ("FAIL T62 semantic $k62 缺 $h62"); $ssrfFail62++ }
+    }
+    if ($noInternal62 -contains $k62 -and $ids62 -and $ids62 -contains 'INTERNAL_NET_CALL') {
+      Write-Host ("FAIL T62 semantic $k62 不应有 INTERNAL_NET_CALL"); $ssrfFail62++
+    }
+  }
+  if ($ssrfFail62 -gt 0) { $fail += $ssrfFail62 }
+  else { Write-Host 'OK T62 SSRF semantic fixture（canonical identity 稳定）' }
+
+  # 63) Evidence 基础：风险 Finding 的 evidence_refs 非空、引用有效、Evidence 字段可追溯
+  $r63 = Invoke-ScanJson $evil
+  $bad63 = @()
+  foreach ($fd63 in @($r63.Findings | Where-Object { -not $_.doc })) {
+    if (@($fd63.evidence_refs).Count -eq 0) { $bad63 += ($fd63.id + ':empty') }
+    foreach ($ref63 in @($fd63.evidence_refs)) {
+      if (-not (@($r63.Target.evidence | Where-Object { $_.evidence_id -eq $ref63 }).Count)) { $bad63 += ($fd63.id + ':dangling') }
+    }
+  }
+  $badEv63 = @($r63.Target.evidence | Where-Object { -not $_.target_id -or -not $_.inspection_id -or -not $_.rule_id -or -not $_.extractor -or -not $_.evidence_strength })
+  if ($bad63.Count -gt 0 -or $badEv63.Count -gt 0) {
+    Write-Host ("FAIL T63 evidence 基础: bad=" + (@($bad63) -join ',') + " ev=" + $badEv63.Count); $fail++
+  } else { Write-Host 'OK T63 风险 Finding evidence_refs 非空、引用有效、Evidence 可追溯' }
+
+  # 64) 不变量：Finding → Evidence → Rule → Target 链路完整
+  $chainFail64 = 0
+  foreach ($fd64 in @($r63.Findings | Where-Object { -not $_.doc })) {
+    foreach ($ref64 in @($fd64.evidence_refs)) {
+      $ev64 = @($r63.Target.evidence | Where-Object { $_.evidence_id -eq $ref64 })[0]
+      if (-not $ev64) { $chainFail64++; continue }
+      if ($ev64.rule_id -ne $fd64.id) { $chainFail64++ }
+      if ($ev64.target_id -ne $r63.Target.target_id) { $chainFail64++ }
+      if ($ev64.extractor -notin @('regex', 'address_classifier', 'python_ast', 'derive')) { $chainFail64++ }
+    }
+  }
+  if ($chainFail64 -gt 0) { Write-Host ("FAIL T64 链路不完整: $chainFail64"); $fail++ }
+  else { Write-Host 'OK T64 Finding→Evidence→Rule→Target 链路完整' }
+
+  # 65) Provenance 完整性：evidence.provenance 含 engine/extractor/rule_id/source_type；native 的 engine 归属正确
+  $bad65 = @($r63.Target.evidence | Where-Object {
+    -not $_.provenance -or -not $_.provenance.engine -or -not $_.provenance.extractor -or -not $_.provenance.rule_id -or -not $_.provenance.source_type
+  })
+  $nativeBad65 = @($r63.Target.evidence | Where-Object {
+    $_.origin -eq 'native' -and $_.provenance.engine -ne $_.provenance.extractor
+  })
+  if ($bad65.Count -gt 0 -or $nativeBad65.Count -gt 0) {
+    Write-Host ("FAIL T65 provenance 完整性: bad=" + $bad65.Count + " nativeMismatch=" + $nativeBad65.Count); $fail++
+  } else { Write-Host 'OK T65 Evidence provenance 字段完整，native engine 归属正确' }
+
+  # 66) correlation provenance：parent_evidence_ids 非空、全部存在、覆盖源 finding 的 evidence_refs
+  $r66 = Invoke-BriefJson $corr
+  $cf66 = @($r66.Target.findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })[0]
+  $corrEv66 = if ($cf66) { @($r66.Target.evidence | Where-Object { $_.evidence_id -eq $cf66.evidence_refs[0] })[0] } else { $null }
+  $srcRefs66 = New-Object System.Collections.ArrayList
+  foreach ($sid66 in @($cf66.source_finding_id)) {
+    $s66 = @($r66.Target.findings | Where-Object { $_.finding_id -eq $sid66 })[0]
+    if ($s66) { foreach ($r66x in @($s66.evidence_refs)) { if ($srcRefs66 -notcontains $r66x) { [void]$srcRefs66.Add($r66x) } } }
+  }
+  $parent66 = @($corrEv66.provenance.parent_evidence_ids)
+  $dangling66 = @($parent66 | Where-Object { $p66id = $_; -not (@($r66.Target.evidence | Where-Object { $_.evidence_id -eq $p66id }).Count) })
+  $cover66 = @($srcRefs66 | Where-Object { $parent66 -notcontains $_ })
+  if (-not $corrEv66 -or $parent66.Count -eq 0 -or $dangling66.Count -gt 0 -or $cover66.Count -gt 0) {
+    Write-Host ("FAIL T66 correlation provenance: parent=" + $parent66.Count + " dangling=" + $dangling66.Count + " uncovered=" + $cover66.Count); $fail++
+  } else { Write-Host 'OK T66 correlation parent_evidence_ids 完整且覆盖源证据' }
+
+  # 67) analyzer 标识：每个风险 finding 的 analyzer 非空，且与 evidence.provenance.engine 一致
+  $bad67 = 0
+  foreach ($fd67 in @($r63.Findings | Where-Object { -not $_.doc })) {
+    if (-not $fd67.analyzer) { $bad67++; continue }
+    $ev67 = @($r63.Target.evidence | Where-Object { $_.evidence_id -eq $fd67.evidence_refs[0] })[0]
+    if ($ev67 -and $ev67.provenance.engine -ne $fd67.analyzer) { $bad67++ }
+  }
+  if ($bad67 -gt 0) { Write-Host ("FAIL T67 analyzer 一致性: $bad67"); $fail++ }
+  else { Write-Host 'OK T67 finding.analyzer 非空且与 evidence.engine 一致' }
+
+  # 68) Ledger 存在性：audit.inspection_run_id + inspection[] 非空
+  $rep68 = Join-Path $tmp 'ledger68.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $evil -Json -Output $rep68 2>$null
+  $obj68 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep68 | ConvertFrom-Json
+  $run68 = [string]$obj68.audit.inspection_run_id
+  if (-not ($run68 -match '^[0-9a-f]{64}$') -or @($obj68.inspection).Count -lt 5) {
+    Write-Host ("FAIL T68 ledger 存在性: run=$run68 n=$(@($obj68.inspection).Count)"); $fail++
+  } else { Write-Host 'OK T68 audit.inspection_run_id + inspection[] 存在' }
+
+  # 69) Run Identity 分离：两次扫描 run_id 不同，finding_id/evidence_refs/score 相同
+  $rep69a = Join-Path $tmp 'ledger69a.json'
+  $rep69b = Join-Path $tmp 'ledger69b.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $evil -Json -Output $rep69a 2>$null
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $evil -Json -Output $rep69b 2>$null
+  $a69 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep69a | ConvertFrom-Json
+  $b69 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep69b | ConvertFrom-Json
+  $sig69 = { param($t) (@($t.findings) | Sort-Object finding_id | ForEach-Object { "{0}|{1}" -f $_.finding_id, (@($_.evidence_refs) -join ',') }) -join "`n" }
+  $fa69 = & $sig69 $a69.targets[0]
+  $fb69 = & $sig69 $b69.targets[0]
+  if ([string]$a69.audit.inspection_run_id -eq [string]$b69.audit.inspection_run_id -or $fa69 -cne $fb69 -or [int]$a69.targets[0].score -ne [int]$b69.targets[0].score) {
+    Write-Host 'FAIL T69 run 与结果身份分离（run_id 应不同且 finding/evidence/score 应相同）'; $fail++
+  } else { Write-Host 'OK T69 run_id 不同，finding_id/evidence_refs/score 相同' }
+
+  # 70) Reason Code：非 executed 条目必须带冻结枚举 reason_code；-NoAst → disabled_by_config
+  $reasonEnum70 = @('binary_asset','binary_content','oversized','permission_denied','unsupported_encoding','external_missing','not_applicable','no_files','parse_error','dependency_unresolved','disabled_by_config','unknown')
+  $rep70 = Join-Path $tmp 'ledger70.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $assetOnly -Json -Output $rep70 2>$null
+  $obj70 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep70 | ConvertFrom-Json
+  $bad70 = @($obj70.inspection | Where-Object { $_.status -ne 'executed' -and (-not $_.reason_code -or $reasonEnum70 -notcontains $_.reason_code) })
+  $rep70b = Join-Path $tmp 'ledger70b.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $evil -Json -Output $rep70b -NoAst 2>$null
+  $obj70b = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep70b | ConvertFrom-Json
+  $disabled70 = @($obj70b.inspection | Where-Object { $_.engine -eq 'python_ast' -and $_.status -eq 'disabled' -and $_.reason_code -eq 'disabled_by_config' })
+  if ($bad70.Count -gt 0 -or $disabled70.Count -lt 1 -or @($obj70.inspection | Where-Object { $_.status -ne 'executed' }).Count -eq 0) {
+    Write-Host ("FAIL T70 reason_code: bad=" + $bad70.Count + " disabled=" + $disabled70.Count); $fail++
+  } else { Write-Host 'OK T70 非 executed 条目 reason_code 齐全且属冻结枚举' }
+
+  # 71) Ledger Isolation：inspection 条目仅含 9 个约定键；finding 不携带 run/entry 字段
+  $keys71 = @('entry_id','run_id','target_id','engine','status','reason_code','coverage','started_at','finished_at','error')
+  $bad71 = @($obj68.inspection | Where-Object { (@($_.PSObject.Properties.Name | Where-Object { $keys71 -notcontains $_ })).Count -gt 0 })
+  $leak71 = @($obj68.targets[0].findings | Where-Object { $null -ne $_.run_id -or $null -ne $_.entry_id })
+  if ($bad71.Count -gt 0 -or $leak71.Count -gt 0) {
+    Write-Host ("FAIL T71 ledger 隔离: badKeys=" + $bad71.Count + " leak=" + $leak71.Count); $fail++
+  } else { Write-Host 'OK T71 ledger 旁路（条目键固定，finding 无 run/entry 泄漏）' }
+
+  # 72) Contract Sync：scan.ps1 ReasonCodes 枚举 == contracts/reason-codes.md
+  $scanText72 = Get-Content -Raw -Encoding UTF8 -LiteralPath $script
+  $m72 = [regex]::Match($scanText72, '\$script:ReasonCodes\s*=\s*@\(([\s\S]*?)\)')
+  $codes72 = @([regex]::Matches($m72.Groups[1].Value, "'([a-z_]+)'") | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+  $md72path = Join-Path (Split-Path $PSScriptRoot -Parent) 'contracts\reason-codes.md'
+  $md72 = Get-Content -Raw -Encoding UTF8 -LiteralPath $md72path
+  $mdCodes72 = @([regex]::Matches($md72, '\| `([a-z_]+)` \|') | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+  if (($codes72 -join ',') -cne ($mdCodes72 -join ',') -or $codes72.Count -lt 12) {
+    Write-Host ("FAIL T72 契约同步: scan=" + $codes72.Count + " md=" + $mdCodes72.Count); $fail++
+  } else { Write-Host 'OK T72 reason_code 枚举与 contracts/reason-codes.md 一致' }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

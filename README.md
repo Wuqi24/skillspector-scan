@@ -4,6 +4,8 @@
 
 **Audit AI agent skills individually.**
 
+**AI Agent Skill 的离线静态安全审查器**：默认全离线、证据驱动、可审计；风险标签为自动推断，安装决策由人裁决。
+
 离线静态安全审查工具：逐个审核本地 AI Agent 技能（Codex skill），识别提示注入、数据外泄、供应链、危险代码调用等 16+ 类风险，输出通俗安全报告。最小审核单位是**单个 skill**：一个 skill → 一个 Target → 一个 Scan Result → 一个审核决策。不安装、不运行目标技能的任何脚本；风险标签为自动推断，不替代人工裁决。
 
 ## 这是什么
@@ -27,6 +29,7 @@
 - 依赖锁定与离线依赖分析（来源白名单、拼写欺诈、安装脚本钩子、依赖数阈值）
 - 简报模式（`-Brief`）：行为概要 → 最坏情况 TOP3 → 详细发现 → 参考发现 → 依赖风险，每条命中带“事实 + 推断”
 - 已审记录（`-MarkVerified`）：文件 SHA-256 清单 + 结论 + 日期，内容变化自动提示结论失效
+- Inspection Ledger（Phase 4B）：`audit.inspection_run_id` + `inspection[]`（engine 生命周期 + 冻结 reason_code），旁路记录不改变评分/证据
 - 发布前门禁（`-PrePublish`）：黑名单文件（.env/密钥文件）+ 内容疑似密钥 + git 历史疑似密钥，只提醒不拦截；已知预期：内容检查会提示 `scripts/test.ps1` 中的测试假密钥（如 `sk-prepubtest...`），属预期，人工确认打码值为测试数据后放行
 - 可选外部扫描器适配：检测到 `aguara` / `skill-scanner` 时自动调用并合并命中（`EXT_AGUARA`/`EXT_SKILLSCANNER`），缺失 SKIP 不报错，`-NoExt` 关闭
 - JSON 报告含 `engines` 检查器状态（regex/multi/lexer/python_ast/js/deps/osv/git_history/manifest/external_*，on/skipped/disabled/degraded）
@@ -124,6 +127,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ## 致谢
 
 设计思路参考 NVIDIA [SkillSpector](https://github.com/NVIDIA/SkillSpector)（Apache-2.0，AI Agent 技能安全扫描器）；本项目为独立实现的 PowerShell 静态扫描器，不含其代码。
+
+工程模式参考 [skill-vetter](https://github.com/app-incubator-xyz/skill-vetter)（多扫描器编排与显式 SKIP、引擎状态透明、显式裁决协议、依赖检查形态）；本项目独立实现，不含其代码。
 
 ## License
 
