@@ -690,6 +690,7 @@ function Test-SelfSkill {
     }
     foreach ($f in @(Get-ItemsSafe $scanPath)) {
       $rel = $f.FullName.Substring($scanPath.Length).TrimStart('\', '/').Replace('\', '/')
+      if ($rel -eq '.git' -or $rel -like '.git/*') { continue }
       if ($f.Name -like '.skillspector-baseline*' -or $rel -in @('.skillspector-verified.yaml', '.DS_Store', 'Thumbs.db')) { continue }
       if ($rel -eq 'test/fixtures/MANIFEST.json') { $relPaths += $rel; continue }
       if ($rel -like 'test/fixtures/*') {
@@ -697,7 +698,7 @@ function Test-SelfSkill {
         if ($fixtureManifest -notcontains $rel) { return $false }
         continue
       }
-      if ($selfCoreFiles -notcontains $rel) { [Console]::Error.WriteLine('[DBG-SELF] extra file: ' + $rel + ' root=' + $scanPath); return $false }
+      if ($selfCoreFiles -notcontains $rel) { return $false }
       $relPaths += $rel
     }
     foreach ($core in $selfCoreFiles) {
@@ -1566,7 +1567,7 @@ function Invoke-ScanPath {
   $item = Get-Item -Force -LiteralPath $scanPath -ErrorAction Stop
   $isContainer = $item.PSIsContainer
   if ($item.PSIsContainer) {
-    $allFiles = @(Get-ItemsSafe $root -errors $errors | Where-Object { $_.FullName -notmatch '\\\.git\\' })
+  $allFiles = @(Get-ItemsSafe $root -errors $errors | Where-Object { $_.FullName -notmatch '[/\\]\.git[/\\]' })
   } else {
     $allFiles = @($item)
     $root = Split-Path $item.FullName -Parent
@@ -2544,7 +2545,7 @@ function Invoke-PrePublishCheck {
     }
   } else {
     foreach ($fi in @(Get-ChildItem -Recurse -File -LiteralPath $target -ErrorAction SilentlyContinue)) {
-      if ($fi.FullName -notmatch '\\\.git\\') { [void]$candidateFiles.Add($fi.FullName) }
+  if ($fi.FullName -notmatch '[/\\]\.git[/\\]') { [void]$candidateFiles.Add($fi.FullName) }
     }
   }
   $checkedFiles = @($candidateFiles).Count
