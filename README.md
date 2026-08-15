@@ -106,6 +106,8 @@ name: scan-skill
 on: workflow_dispatch
 jobs:
   scan:
+    permissions:
+      contents: read
     uses: Wuqi24/skillspector-scan/.github/workflows/skill-scan.yml@main
     with:
       skill_path: '.'      # 要扫描的技能路径（相对目标仓库根）
