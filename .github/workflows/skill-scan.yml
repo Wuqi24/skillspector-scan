@@ -47,10 +47,6 @@ on:
         required: false
         default: false
 
-permissions:
-  contents: read
-  actions: write
-
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -75,17 +71,11 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'full' }
           $scan = "$env:GITHUB_WORKSPACE/scanner/scripts/scan.ps1"
           if ($mode -eq 'full') {
-            pwsh -NoProfile -File $scan -Path $path 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
+            pwsh -NoProfile -File $scan -Path $path
           } else {
-            pwsh -NoProfile -File $scan -Path $path -PrePublish 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
+            pwsh -NoProfile -File $scan -Path $path -PrePublish
           }
           exit $LASTEXITCODE
-      - name: Upload scan report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: skillspector-report
-          path: ${{ runner.temp }}/report.txt
 
   regression:
     runs-on: windows-latest
@@ -97,14 +87,8 @@ jobs:
         if: github.event_name == 'push' || inputs.run_regression
         shell: pwsh
         run: |
-          pwsh -NoProfile -File scripts/test.ps1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/test-report.txt"
+          pwsh -NoProfile -File scripts/test.ps1
           exit $LASTEXITCODE
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: skillspector-test-report
-          path: ${{ runner.temp }}/test-report.txt
 
   docker-build:
     runs-on: ubuntu-latest
@@ -117,7 +101,7 @@ jobs:
         if: github.event_name == 'push' || inputs.build_docker
         shell: bash
         run: |
-          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test > /tmp/evil-report.txt 2>&1 || true
+          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | tee /tmp/evil-report.txt
           python3 - <<'EOF'
           import re
           t = open('/tmp/evil-report.txt', encoding='utf-8', errors='replace').read()
@@ -126,9 +110,3 @@ jobs:
           print('OK evil detected score=100' if ok else 'FAIL score=100 not found')
           raise SystemExit(0 if ok else 1)
           EOF
-      - name: Upload evil verification report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: skillspector-docker-report
-          path: /tmp/evil-report.txt
