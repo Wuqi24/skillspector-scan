@@ -148,6 +148,14 @@ jobs:
 - 再次扫描只读比对：文件 SHA-256 全部匹配 → 显示“上次已审”；任一文件变化 → “内容已变，上次结论可能失效”；规则/配置版本或哈希变化 → “扫描规则或配置已更新，上次结论可能失效”
 - 仅折叠显示，不自动拦截
 
+## Wiki 文档
+
+- [Home（总览与快速开始）](https://github.com/Wuqi24/skillspector-scan/wiki)
+- [使用指南（Usage）](https://github.com/Wuqi24/skillspector-scan/wiki/Usage)
+- [更新历程（Changelog）](https://github.com/Wuqi24/skillspector-scan/wiki/Changelog)
+- [FAQ](https://github.com/Wuqi24/skillspector-scan/wiki/FAQ)
+- [规则库说明（Rules）](https://github.com/Wuqi24/skillspector-scan/wiki/Rules)
+
 ## 测试
 
 ```powershell
