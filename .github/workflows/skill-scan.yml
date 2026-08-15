@@ -100,8 +100,15 @@ jobs:
       - name: Verify evil fixture detection (expect score=100)
         shell: bash
         run: |
-          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | sed -r 's/\x1B\[[0-9;]*[mK]//g' | tee /tmp/evil-report.txt
-          grep -q 'score=100' /tmp/evil-report.txt
+          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test > /tmp/evil-report.txt 2>&1 || true
+          python3 - <<'EOF'
+          import re
+          t = open('/tmp/evil-report.txt', encoding='utf-8', errors='replace').read()
+          t = re.sub(r'\x1b\[[0-9;]*[mK]', '', t)
+          ok = 'score=100' in t
+          print('OK evil detected score=100' if ok else 'FAIL score=100 not found')
+          raise SystemExit(0 if ok else 1)
+          EOF
       - name: Upload evil verification report
         if: always()
         uses: actions/upload-artifact@v4
