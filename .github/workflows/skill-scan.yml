@@ -38,6 +38,14 @@ on:
         type: string
         required: false
         default: 'prepublish'
+      run_regression:
+        type: boolean
+        required: false
+        default: false
+      build_docker:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
