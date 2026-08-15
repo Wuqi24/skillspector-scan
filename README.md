@@ -1,5 +1,9 @@
 # skillspector-scan
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Release](https://img.shields.io/github/v/release/Wuqi24/skillspector-scan)
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
+
 **Repository / Runtime skill ID**: `skillspector-scan`
 
 **Audit AI agent skills individually.**
