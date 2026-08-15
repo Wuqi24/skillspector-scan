@@ -52,11 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout scanner (skillspector-scan)
-        uses: actions/checkout@v4
-        with:
-          repository: Wuqi24/skillspector-scan
-          ref: main
-          path: scanner
+        shell: bash
+        run: git clone --depth 1 https://github.com/Wuqi24/skillspector-scan.git "$GITHUB_WORKSPACE/scanner"
       - name: Checkout target
         uses: actions/checkout@v4
         with:
