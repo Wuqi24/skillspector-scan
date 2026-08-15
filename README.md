@@ -93,6 +93,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -CheckDeps
 
 PowerShell 7 环境把开头的 `powershell` 换成 `pwsh` 即可。支持直接扫描 `.zip`（带成员数与解压总量上限，防 zip 炸弹）。
 
+## 云端 CI 扫描（无本地环境）
+
+本仓库提供可复用的 GitHub Actions workflow：把技能放进任意 GitHub 仓库，即可在云端扫描，无需本地安装 PowerShell / Python / git。
+
+**其他仓库引用（推荐）**
+
+在目标仓库添加 workflow（如 `.github/workflows/scan-skill.yml`）：
+
+```yaml
+name: scan-skill
+on: workflow_dispatch
+jobs:
+  scan:
+    uses: Wuqi24/skillspector-scan/.github/workflows/skill-scan.yml@main
+    with:
+      skill_path: '.'      # 要扫描的技能路径（相对目标仓库根）
+      mode: prepublish     # prepublish=发布前门禁；full=完整风险扫描
+```
+
+参数：
+
+| 参数 | 默认 | 说明 |
+|:---|:---|:---|
+| `skill_path` | `.` | 要扫描的技能/目录路径（相对目标仓库根） |
+| `mode` | `prepublish` | `prepublish`=发布前门禁（黑名单文件+内容+git 历史密钥）；`full`=完整风险扫描 |
+
+- 报告以 artifact `skillspector-report` 上传（Actions 运行页可下载）
+- `prepublish` 检出风险时 job 失败（exit 1），作为发布门禁
+- 目标仓库技能若含测试假密钥，`prepublish` 会提示风险（属预期）；`full` 用于普通风险扫描
+
+**本仓库自身**
+
+- 手动：Actions 页面 → `skillspector-scan` → Run workflow（可选 自检 / 完整回归 / Docker 构建验证）
+- 发布：打 `v*` 标签自动运行 自检 + 完整回归 + Docker 构建与恶意夹具验证
+
 ## 规则注册表
 
 检测规则是**冻结的规则注册表** [rules/rules.yaml](rules/rules.yaml)，人工审核后固定：
