@@ -51,14 +51,13 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout scanner (skillspector-scan)
-        shell: bash
-        run: git clone --depth 1 https://github.com/Wuqi24/skillspector-scan.git "$GITHUB_WORKSPACE/scanner"
       - name: Checkout target
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: false
+      - name: Checkout scanner (skillspector-scan)
+        shell: bash
+        run: git clone --depth 1 https://github.com/Wuqi24/skillspector-scan.git "$GITHUB_WORKSPACE/scanner"
       - name: Run skillspector-scan
         shell: pwsh
         run: |
