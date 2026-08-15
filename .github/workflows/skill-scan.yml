@@ -65,10 +65,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          path: target
       - name: Run skillspector-scan
         shell: pwsh
-        working-directory: target
         run: |
           $path = "${{ inputs.skill_path }}"
           if ([string]::IsNullOrWhiteSpace($path)) { $path = '.' }
