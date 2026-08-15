@@ -15,6 +15,19 @@ on:
         options:
           - prepublish
           - full
+      run_regression:
+        description: 运行完整回归测试（test.ps1，Windows，约 7 分钟）
+        required: false
+        default: 'true'
+        type: boolean
+      build_docker:
+        description: 验证 Docker 镜像构建与恶意夹具检出
+        required: false
+        default: 'true'
+        type: boolean
+  push:
+    tags:
+      - 'v*'
   workflow_call:
     inputs:
       skill_path:
@@ -57,3 +70,41 @@ jobs:
         with:
           name: skillspector-report
           path: ${{ runner.temp }}/report.txt
+
+  regression:
+    if: github.event_name == 'push' || inputs.run_regression == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run full regression (test.ps1)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/test.ps1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/test-report.txt"
+          exit $LASTEXITCODE
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skillspector-test-report
+          path: ${{ runner.temp }}/test-report.txt
+
+  docker-build:
+    if: github.event_name == 'push' || inputs.build_docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t skillspector-scan -f docker/Dockerfile .
+      - name: Verify evil fixture detection (expect score=100)
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | tee /tmp/evil-report.txt
+          grep -q 'score=100' /tmp/evil-report.txt
+      - name: Upload evil verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skillspector-docker-report
+          path: /tmp/evil-report.txt
