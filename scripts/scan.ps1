@@ -132,11 +132,11 @@ $selfCoreFiles = @(
 # 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
 $SelfHashes = @{
   '.dockerignore' = '6A109BD62F1C1078D8F206A37B7E76A93765CC59C2457CADF841E46C3A7DB5BB'
-  '.github/workflows/skill-scan.yml' = 'ECBA2A6603626DC6C9BC56B6E2D323838E11F276E2BDBA033AC6EAE861A5DC26'
+  '.github/workflows/skill-scan.yml' = '5F0838DA47FC046565BC52EC3FDD1C8D6EEA8572621FBFCAB007C93087200DE6'
   'SKILL.md' = '3D2D30CC6B10D41A0B48D5BFFFE358CC1F88A2858BF447979A5A6740533173A8'
   'README.md' = 'E2214066693189ED0D0102DCD4BCF30ECCC8E936D3D39E6D91580B9BDD099096'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
-  'test/fixtures/MANIFEST.json' = '9C19ADA10CD7B243498B15E9D14F5EDFA3A4D6ACD5B777F920A0961CBE1EC658'
+  'test/fixtures/MANIFEST.json' = '4D226826EFAA233500151A4899E14D0D0051A1D6D61208BDB64C192BD82943F6'
   'contracts/reason-codes.md' = '0859DB5C0F0C379825ED62D9F134CDBE4FC9906CD5D0CD395996D058E5F1964C'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
@@ -149,7 +149,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '493FC2C6C36645BF2E7A083444CCF1020E00732E75AFE19ADBA0B8378420527C'
+  'scripts/test.ps1' = 'C2E73A4163DACDACD11AA9FCA2A67B1CE44242CA40CD7975F22DF7D878658083'
 }
 # __SELF_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
@@ -274,6 +274,21 @@ function Get-Sha256Hex {
   try {
     $h = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
     return ([System.BitConverter]::ToString($h)).Replace('-', '').ToLower()
+  } finally { $sha.Dispose() }
+}
+
+function Get-NormalizedFileHash {
+  # 自扫哈希对行尾/BOM 免疫：去 BOM、CRLF→LF 后算 SHA-256，保证 Windows 工作区（CRLF）与 CI/Linux（LF）一致
+  param([string]$Path)
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $start = 0
+  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { $start = 3 }
+  $text = [System.Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start)
+  $norm = $text -replace "`r`n", "`n"
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hashBytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($norm))
+    return (($hashBytes | ForEach-Object { $_.ToString('X2') }) -join '')
   } finally { $sha.Dispose() }
 }
 
@@ -466,7 +481,7 @@ function Write-SelfHashes {
   foreach ($rel in @($selfCoreFiles | Where-Object { $_ -ne 'scripts/scan.ps1' })) {
     $hp = Join-Path $skillDir ($rel -replace '/', '\')
     if (-not (Test-Path -LiteralPath $hp)) { Write-Output ('错误: 核心文件缺失，无法刷新哈希: ' + $rel); exit 2 }
-    $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $hp).Hash
+    $h = Get-NormalizedFileHash $hp
     [void]$lines.Add(("  '" + $rel + "' = '" + $h + "'"))
   }
   [void]$lines.Add('}')
@@ -693,7 +708,7 @@ function Test-SelfSkill {
       foreach ($k in @($SelfHashes.Keys)) {
         $hp = Join-Path $scanPath ($k -replace '/', '\')
         if (-not (Test-Path -LiteralPath $hp)) { return $false }
-        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $hp).Hash -ne $SelfHashes[$k]) { return $false }
+        if ((Get-NormalizedFileHash $hp) -ne $SelfHashes[$k]) { return $false }
       }
     }
     return $true
