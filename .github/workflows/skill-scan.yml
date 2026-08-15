@@ -101,7 +101,8 @@ jobs:
         if: github.event_name == 'push' || inputs.build_docker
         shell: bash
         run: |
-          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | tee /tmp/evil-report.txt
+          # docker run 检出 CRITICAL 时按设计返回 1，交给下方 python 按报告内容判定
+          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | tee /tmp/evil-report.txt || true
           python3 - <<'EOF'
           import re
           t = open('/tmp/evil-report.txt', encoding='utf-8', errors='replace').read()
