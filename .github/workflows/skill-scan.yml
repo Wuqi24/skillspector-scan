@@ -18,12 +18,12 @@ on:
       run_regression:
         description: 运行完整回归测试（test.ps1，Windows，约 7 分钟）
         required: false
-        default: 'true'
+        default: true
         type: boolean
       build_docker:
         description: 验证 Docker 镜像构建与恶意夹具检出
         required: false
-        default: 'true'
+        default: true
         type: boolean
   push:
     tags:
