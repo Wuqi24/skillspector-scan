@@ -47,21 +47,31 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout scanner (skillspector-scan)
+        uses: actions/checkout@v4
+        with:
+          repository: Wuqi24/skillspector-scan
+          ref: main
+          path: scanner
+      - name: Checkout target
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: target
       - name: Run skillspector-scan
         shell: pwsh
+        working-directory: target
         run: |
           $path = "${{ inputs.skill_path }}"
           if ([string]::IsNullOrWhiteSpace($path)) { $path = '.' }
           $mode = "${{ inputs.mode }}"
           # 手动/引用默认 full（仓库自检 score=0）；prepublish 仅对真实发布源目录使用
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'full' }
+          $scan = "$env:GITHUB_WORKSPACE/scanner/scripts/scan.ps1"
           if ($mode -eq 'full') {
-            pwsh -NoProfile -File scripts/scan.ps1 -Path $path 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
+            pwsh -NoProfile -File $scan -Path $path 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
           } else {
-            pwsh -NoProfile -File scripts/scan.ps1 -Path $path -PrePublish 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
+            pwsh -NoProfile -File $scan -Path $path -PrePublish 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/report.txt"
           }
           exit $LASTEXITCODE
       - name: Upload scan report
