@@ -68,9 +68,9 @@ jobs:
           # push/PR 是仓库自检：走 full（自扫豁免 → score=0）；PrePublish 仅限人工对真实发布源使用
           if ('${{ github.event_name }}' -in @('push', 'pull_request')) { $mode = 'full' }
           if ($mode -eq 'full') {
-            pwsh -NoProfile -File scripts/scan.ps1 -Path $path 2>&1 | Tee-Object -FilePath report.txt
+            pwsh -NoProfile -File scripts/scan.ps1 -Path $path 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE/report.txt"
           } else {
-            pwsh -NoProfile -File scripts/scan.ps1 -Path $path -PrePublish 2>&1 | Tee-Object -FilePath report.txt
+            pwsh -NoProfile -File scripts/scan.ps1 -Path $path -PrePublish 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE/report.txt"
           }
           exit $LASTEXITCODE
       - name: Upload scan report
@@ -78,4 +78,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: skillspector-report
-          path: skillspector-scan/report.txt
+          path: ${{ github.workspace }}/report.txt
