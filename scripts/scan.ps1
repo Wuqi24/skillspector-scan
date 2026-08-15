@@ -697,7 +697,7 @@ function Test-SelfSkill {
         if ($fixtureManifest -notcontains $rel) { return $false }
         continue
       }
-      if ($selfCoreFiles -notcontains $rel) { return $false }
+      if ($selfCoreFiles -notcontains $rel) { [Console]::Error.WriteLine('[DBG-SELF] extra file: ' + $rel + ' root=' + $scanPath); return $false }
       $relPaths += $rel
     }
     foreach ($core in $selfCoreFiles) {
