@@ -100,7 +100,7 @@ jobs:
       - name: Verify evil fixture detection (expect score=100)
         shell: bash
         run: |
-          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | tee /tmp/evil-report.txt
+          docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test 2>&1 | sed -r 's/\x1B\[[0-9;]*[mK]//g' | tee /tmp/evil-report.txt
           grep -q 'score=100' /tmp/evil-report.txt
       - name: Upload evil verification report
         if: always()
