@@ -57,12 +57,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: skillspector-scan
       - name: Run skillspector-scan
         shell: pwsh
+        working-directory: skillspector-scan
         run: |
           $path = "${{ inputs.skill_path }}"
           if ([string]::IsNullOrWhiteSpace($path)) { $path = '.' }
           $mode = "${{ inputs.mode }}"
+          # push/PR 是仓库自检：走 full（自扫豁免 → score=0）；PrePublish 仅限人工对真实发布源使用
+          if ('${{ github.event_name }}' -in @('push', 'pull_request')) { $mode = 'full' }
           if ($mode -eq 'full') {
             pwsh -NoProfile -File scripts/scan.ps1 -Path $path 2>&1 | Tee-Object -FilePath report.txt
           } else {
@@ -74,4 +78,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: skillspector-report
-          path: report.txt
+          path: skillspector-scan/report.txt
