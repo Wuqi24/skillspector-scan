@@ -88,13 +88,13 @@ jobs:
           path: ${{ runner.temp }}/report.txt
 
   regression:
-    if: github.event_name == 'push' || inputs.run_regression
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Run full regression (test.ps1)
+        if: github.event_name == 'push' || inputs.run_regression
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/test.ps1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/test-report.txt"
@@ -107,13 +107,14 @@ jobs:
           path: ${{ runner.temp }}/test-report.txt
 
   docker-build:
-    if: github.event_name == 'push' || inputs.build_docker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build image
+        if: github.event_name == 'push' || inputs.build_docker
         run: docker build -t skillspector-scan -f docker/Dockerfile .
       - name: Verify evil fixture detection (expect score=100)
+        if: github.event_name == 'push' || inputs.build_docker
         shell: bash
         run: |
           docker run --rm -v "$PWD/docker/fixtures/evil-test:/skills/evil-test:ro" skillspector-scan -Path /skills/evil-test > /tmp/evil-report.txt 2>&1 || true
