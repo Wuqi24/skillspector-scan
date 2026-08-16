@@ -45,7 +45,10 @@
 # 1. 直接克隆到 Codex 技能目录（仓库名 = 技能名）
 git clone https://github.com/Wuqi24/skillspector-scan.git "$HOME\.codex\skills\skillspector-scan"
 
-# 2. 也可以直接作为独立脚本使用，不依赖 Codex（进入技能目录后）
+# 2. 或从 GitHub Release 下载安装包 skillspector-scan-vX.Y.Z.zip（不含测试夹具与 CI 文件），
+#    解压到 "$HOME\.codex\skills\skillspector-scan"（zip 顶层即为技能目录）
+
+# 3. 安装后也可以直接作为独立脚本使用，不依赖 Codex（进入技能目录后）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录>
 ```
 
