@@ -145,6 +145,8 @@ jobs:
 `data/policy.yaml` 是独立决策策略层：只负责 `severity/risk facts → decision_recommendation` 映射（默认：LOW→ALLOW、MEDIUM→REVIEW、HIGH/CRITICAL→BLOCK），**不包含 analyzer 规则、regex、evidence 生成或 score 算法**。
 
 - 输出 `target.decision_recommendation`：机器可消费的枚举建议（ALLOW / REVIEW / BLOCK），不修改 score / severity / finding / evidence / ranking
+- 展示投影（Phase 6B）：普通 CLI 与 Brief 输出新增「决策建议（Decision Recommendation）」行，值直接读取结果、不做二次判断；多目标简报汇总按 policy aggregation（BLOCK > REVIEW > ALLOW），仅展示投影、不改变单目标决策
+- `target.decision_reason[]`：与决策同源生成（`severity=<SEVERITY>`、`policy_rule=<SEVERITY>_TO_<DECISION>`），可审计"为什么给出该建议"
 - `policy_hash`（canonical yaml → SHA-256）进入 audit、inspection ledger、verified 与 baseline；policy 修改后旧审计记录自动失效提示
 - 人工裁决：`-MarkVerified allow|deny -Reviewer <name>` 记录审核人，缺省 `anonymous`
 
