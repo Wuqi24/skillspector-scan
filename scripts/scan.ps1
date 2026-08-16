@@ -124,7 +124,7 @@ $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
 # 夹具目录（test/fixtures、docker/fixtures）不随技能分发：避免安装后 Codex 枚举夹具 SKILL.md 造成卡顿；
 # dev 源保留夹具，存在时仍受下方 test/fixtures MANIFEST 白名单与 docker/fixtures 固定文件特判约束
 $selfCoreFiles = @(
-  '.dockerignore', '.github/workflows/skill-scan.yml', 'SKILL.md', 'README.md', 'LICENSE',
+  '.dockerignore', '.github/workflows/skill-scan.yml', 'SKILL.md', 'README.md', 'LICENSE', 'SECURITY.md',
   'contracts/reason-codes.md',
   'agents/openai.yaml', 'data/known_packages.json', 'data/policy.yaml', 'docker/Dockerfile', 'docker/README.md',
   'references/checklist.md', 'references/scan-patterns.md', 'rules/rules.yaml',
@@ -136,8 +136,9 @@ $SelfHashes = @{
   '.dockerignore' = '6A109BD62F1C1078D8F206A37B7E76A93765CC59C2457CADF841E46C3A7DB5BB'
   '.github/workflows/skill-scan.yml' = '0DA9BFDFA7E8BD9C131A6DA9909D1112E07FFFB4797E8CFF4A9E28AA7AA3B068'
   'SKILL.md' = '3D2D30CC6B10D41A0B48D5BFFFE358CC1F88A2858BF447979A5A6740533173A8'
-  'README.md' = '0762BCAEE253633B0142B3F46DD5880ACC68A0371A23AA5A3E43DD79836948CB'
+  'README.md' = '2D69F33F8CB7E525D7676129105A3025B072AF305DFBDE7AB6F53B08F9E3D8EE'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
+  'SECURITY.md' = 'E170053814FDD75586323AFE8FAADFA7C46A61B9F871803C98EE5899BFD70135'
   'contracts/reason-codes.md' = '0859DB5C0F0C379825ED62D9F134CDBE4FC9906CD5D0CD395996D058E5F1964C'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'

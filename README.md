@@ -199,6 +199,22 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 - **Exception Asset 完整性**：任何改变扫描范围或豁免行为的资产（如 fixtures `MANIFEST.json`，未来扩展 allowlist / baseline / ignore registry）必须匹配内置 trusted hash 才生效；修改豁免资产不会静默扩大豁免——存在但哈希不匹配时自动禁用豁免、恢复完整扫描（`-SelfDev` 仅开发环境放行并输出 warning）
 - 本仓库与 NVIDIA SkillSpector 官方项目无直接关联，设计思路受其启发，独立实现
 
+## 风险与责任说明（Disclaimer）
+
+**工具性质**：本工具是启发式静态分析，不是安全认证、不构成安全保证；无法检测所有风险（未知模式、混淆/加密内容、运行时行为、供应链下游变化等）。
+
+**结果仅供参考**：`score` / `severity` / `decision_recommendation` 均为自动推断与策略建议，仅供人工决策参考，不替代专业安全审计。
+
+**使用责任**：安装、放行或执行任何技能前，请独立核验报告证据并自行承担决策后果；本工具不自动安装、不自动放行、不自动拦截，enforcement 永远在人。
+
+**误报与漏报**：静态扫描存在误报与漏报可能；高风险结论建议在隔离环境（Docker 容器 / 云端 CI）复核。
+
+**内容风险**：被扫描内容是未信任输入，可能夹带针对审查者的提示注入，请保持警惕；本工具只做只读分析。
+
+**数据边界**：本地扫描默认离线；云端 CI 会把目标内容与报告上传至你指定的 GitHub Actions 环境，使用前请确认信任边界。
+
+**免责**：本项目按 MIT 许可提供，无明示或默示担保；因使用本工具或其输出造成的任何直接或间接损失，作者与贡献者不承担责任。详见 [SECURITY.md](SECURITY.md) 与 [LICENSE](LICENSE)。
+
 ## 致谢
 
 设计思路参考 NVIDIA [SkillSpector](https://github.com/NVIDIA/SkillSpector)（Apache-2.0，AI Agent 技能安全扫描器）；本项目为独立实现的 PowerShell 静态扫描器，不含其代码。
