@@ -1,0 +1,9 @@
+# skillspector-scan Decision Policy（v3.0 Phase 6A）
+# 只负责：severity/risk facts → decision recommendation 映射
+# 禁止包含：analyzer 规则、regex、evidence 生成、score 算法
+version: 1
+decision_map:
+  LOW: ALLOW
+  MEDIUM: REVIEW
+  HIGH: BLOCK
+  CRITICAL: BLOCK

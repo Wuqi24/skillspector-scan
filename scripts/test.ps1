@@ -1049,7 +1049,7 @@ print(os.getenv("HOME"))
   } else { Write-Host 'OK T70 非 executed 条目 reason_code 齐全且属冻结枚举' }
 
   # 71) Ledger Isolation：inspection 条目仅含 9 个约定键；finding 不携带 run/entry 字段
-  $keys71 = @('entry_id','run_id','target_id','engine','status','reason_code','coverage','started_at','finished_at','error')
+  $keys71 = @('entry_id','run_id','target_id','engine','status','reason_code','policy_hash','coverage','started_at','finished_at','error')
   $bad71 = @($obj68.inspection | Where-Object { (@($_.PSObject.Properties.Name | Where-Object { $keys71 -notcontains $_ })).Count -gt 0 })
   $leak71 = @($obj68.targets[0].findings | Where-Object { $null -ne $_.run_id -or $null -ne $_.entry_id })
   if ($bad71.Count -gt 0 -or $leak71.Count -gt 0) {
@@ -1258,6 +1258,87 @@ subprocess.run(os.environ["CMD"], shell=True)
     Write-Host 'FAIL T80 指纹确定性（格式或同输入一致性）'; $fail++
   } else { Write-Host 'OK T80 指纹确定性（64 位 HEX，同输入两次 valid）' }
   if ($vp80) { Remove-Item -LiteralPath $vp80 -Force -ErrorAction SilentlyContinue }
+
+  # 81) Decision Determinism：同 target/同 facts/同 policy → 同 decision_recommendation（合法枚举）
+  $t81 = Join-Path $tmp 't81'
+  $s81 = Join-Path $t81 'target-skill81'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s81 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s81 'SKILL.md') -Value "---`nname: target-skill81`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s81 'scripts\run.py') -Value "print('hi')"
+  $r81a = Invoke-ScanJson $s81
+  $r81b = Invoke-ScanJson $s81
+  $d81 = $r81a.Target.decision_recommendation
+  if ($d81 -ne $r81b.Target.decision_recommendation -or $d81 -notin @('ALLOW', 'REVIEW', 'BLOCK')) {
+    Write-Host ("FAIL T81 decision 确定性: a=" + $d81 + " b=" + $r81b.Target.decision_recommendation); $fail++
+  } else { Write-Host ("OK T81 Decision Determinism（" + $d81 + "，同输入两次一致）") }
+
+  # 82) Policy Isolation：改 policy → decision 变；finding/evidence/score/ranking 不变
+  $t82 = Join-Path $tmp 't82'
+  $s82 = Join-Path $t82 'target-skill82'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s82 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s82 'SKILL.md') -Value "---`nname: target-skill82`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s82 'scripts\run.py') -Value "print('hi')"
+  $scanner82 = Join-Path $t82 'scanner-copy82'
+  Remove-Item -Recurse -Force $scanner82 -ErrorAction SilentlyContinue
+  Copy-Item -Recurse -Force -LiteralPath (Split-Path $PSScriptRoot -Parent) $scanner82
+  $r82a = Invoke-ScanJson $s82
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scanner82 'data\policy.yaml') -Value "version: 1`ndecision_map:`n  LOW: BLOCK`n  MEDIUM: REVIEW`n  HIGH: BLOCK`n  CRITICAL: BLOCK"
+  $rep82 = Join-Path $tmp 'p82.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scanner82 'scripts\scan.ps1') -Path $s82 -Json -Output $rep82 2>$null
+  $obj82 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep82 | ConvertFrom-Json
+  $r82b = [pscustomobject]@{ Score = [int]$obj82.targets[0].score; Findings = @($obj82.targets[0].findings); Target = $obj82.targets[0] }
+  $fids82a = @($r82a.Findings | ForEach-Object { $_.finding_id } | Sort-Object) -join ','
+  $fids82b = @($r82b.Findings | ForEach-Object { $_.finding_id } | Sort-Object) -join ','
+  $eids82a = @($r82a.Target.evidence | ForEach-Object { $_.evidence_id } | Sort-Object) -join ','
+  $eids82b = @($r82b.Target.evidence | ForEach-Object { $_.evidence_id } | Sort-Object) -join ','
+  if ($r82a.Target.decision_recommendation -ceq $r82b.Target.decision_recommendation -or $r82a.Score -ne $r82b.Score -or $fids82a -cne $fids82b -or $eids82a -cne $eids82b) {
+    Write-Host ("FAIL T82 policy 隔离: d=" + $r82a.Target.decision_recommendation + "/" + $r82b.Target.decision_recommendation + " score=" + $r82a.Score + "/" + $r82b.Score + " f=" + ($fids82a -ceq $fids82b) + " e=" + ($eids82a -ceq $eids82b)); $fail++
+  } else { Write-Host ("OK T82 Policy Isolation（decision " + $r82a.Target.decision_recommendation + "→" + $r82b.Target.decision_recommendation + "，facts/score 不变）") }
+  Remove-Item -Recurse -Force $scanner82 -ErrorAction SilentlyContinue
+
+  # 83) Baseline Policy Binding：policy_hash 变化 → suppression 禁用 + warning
+  $t83 = Join-Path $tmp 't83'
+  $s83 = Join-Path $t83 'target-skill83'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s83 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s83 'SKILL.md') -Value "---`nname: target-skill83`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s83 'scripts\evil.py') -Value @'
+import os, subprocess
+subprocess.run(os.environ["CMD"], shell=True)
+'@
+  $bl83 = Join-Path $t83 'baseline.yaml'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $s83 -InitBaseline -Baseline $bl83 2>$null | Out-Null
+  $r83a = Invoke-ScanJson $s83 @('-Baseline', $bl83)
+  $n83a = @($r83a.Target.findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) }).Count
+  $scanner83 = Join-Path $t83 'scanner-copy83'
+  Remove-Item -Recurse -Force $scanner83 -ErrorAction SilentlyContinue
+  Copy-Item -Recurse -Force -LiteralPath (Split-Path $PSScriptRoot -Parent) $scanner83
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scanner83 'data\policy.yaml') -Value "version: 1`ndecision_map:`n  LOW: ALLOW`n  MEDIUM: BLOCK`n  HIGH: BLOCK`n  CRITICAL: BLOCK"
+  $rep83 = Join-Path $tmp 'p83.json'
+  $warn83 = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scanner83 'scripts\scan.ps1') -Path $s83 -Json -Baseline $bl83 -Output $rep83 2>&1 | Out-String
+  $obj83 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep83 | ConvertFrom-Json
+  $n83b = @($obj83.targets[0].findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) }).Count
+  if ($n83b -le $n83a -or $warn83 -notmatch '基线版本与当前') {
+    Write-Host ("FAIL T83 baseline 绑定: nA=" + $n83a + " nB=" + $n83b + " warn=" + ($warn83 -match '基线版本')); $fail++
+  } else { Write-Host ("OK T83 Baseline Policy Binding（suppression 禁用，warning 输出）") }
+  Remove-Item -Recurse -Force $scanner83 -ErrorAction SilentlyContinue
+
+  # 84) Reviewer Audit：-Reviewer 写入记录；默认 anonymous；兼容旧记录
+  $t84 = Join-Path $tmp 't84'
+  $s84 = Join-Path $t84 'target-skill84'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s84 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s84 'SKILL.md') -Value "---`nname: target-skill84`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s84 'scripts\run.py') -Value "print('hi')"
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $script -MarkVerified allow -Reviewer test-user -Path $s84 2>$null
+  $vd84 = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.verified'
+  $vp84 = @(Get-ChildItem -LiteralPath $vd84 -Filter 'target-skill84@*.json' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)
+  $rec84 = $null
+  if ($vp84) { $rec84 = Get-Content -Raw -Encoding UTF8 -LiteralPath $vp84 | ConvertFrom-Json }
+  if (-not $rec84 -or $rec84.reviewer -ne 'test-user' -or -not $rec84.decision -or -not $rec84.verified_at -or -not $rec84.policy_hash) {
+    Write-Host 'FAIL T84 reviewer 审计（reviewer/decision/timestamp/policy_hash）'; $fail++
+  } else {
+    Write-Host ("OK T84 Reviewer Audit（reviewer=" + $rec84.reviewer + " decision=" + $rec84.decision + "）")
+  }
+  if ($vp84) { Remove-Item -LiteralPath $vp84 -Force -ErrorAction SilentlyContinue }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

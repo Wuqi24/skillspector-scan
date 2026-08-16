@@ -101,6 +101,7 @@ param(
   [switch]$CheckDeps,
   [switch]$NoExt,
   [ValidateSet('allow', 'deny')][string]$MarkVerified,
+  [string]$Reviewer,
   [switch]$PrePublish
 )
 
@@ -125,7 +126,7 @@ $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
 $selfCoreFiles = @(
   '.dockerignore', '.github/workflows/skill-scan.yml', 'SKILL.md', 'README.md', 'LICENSE',
   'contracts/reason-codes.md',
-  'agents/openai.yaml', 'data/known_packages.json', 'docker/Dockerfile', 'docker/README.md',
+  'agents/openai.yaml', 'data/known_packages.json', 'data/policy.yaml', 'docker/Dockerfile', 'docker/README.md',
   'references/checklist.md', 'references/scan-patterns.md', 'rules/rules.yaml',
   'scripts/scan.ps1', 'scripts/ast_check.py', 'scripts/lexer.py', 'scripts/test.ps1'
 )
@@ -140,6 +141,7 @@ $SelfHashes = @{
   'contracts/reason-codes.md' = '0859DB5C0F0C379825ED62D9F134CDBE4FC9906CD5D0CD395996D058E5F1964C'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
+  'data/policy.yaml' = '0C09DF6A732A5F46A4D829F8A4C82E22C271044AC3BCC42C2F8AE5CA5F47F80B'
   'docker/Dockerfile' = '6A46DAB6D5E26B8512D10219C472C16F606DDBFB0DCB30DB0832FD811933F99F'
   'docker/README.md' = '7A344A6661AF66F698E3355DCABCBC78B8ECAF99791AC332176F263EB37F3590'
   'references/checklist.md' = '5FA0A3BE7A4B2FFD6C19686001BC2597C5B35ABC25DBFBAEC803EC2F751BF1C4'
@@ -147,7 +149,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '94B993227E5E311F0AD45570C4E92DE34C17DB1537C1AC7F1402AC46F79B28F5'
+  'scripts/test.ps1' = 'A35F96866F524939B7F044192D6C806073EAE10077D34A6B866185922F2A8E31'
 }
 # __SELF_HASHES_END__
 # __EXCEPTION_ASSET_HASHES_BEGIN__
@@ -475,6 +477,36 @@ function Get-RegistryHashes {
   }
 }
 
+function Get-PolicyConfig {
+  # Phase 6A：Decision Policy 层——只负责 severity/risk facts → decision recommendation 映射。
+  # 禁止包含 analyzer 规则 / regex / evidence 生成 / score 算法；policy 修改只影响建议，不改任何事实。
+  $root = Split-Path $PSScriptRoot -Parent
+  $policyPath = Join-Path $root 'data\policy.yaml'
+  $defaultText = @"
+version: 1
+decision_map:
+  LOW: ALLOW
+  MEDIUM: REVIEW
+  HIGH: BLOCK
+  CRITICAL: BLOCK
+"@
+  $text = ''
+  if (Test-Path -LiteralPath $policyPath) {
+    try { $text = [System.IO.File]::ReadAllText($policyPath) } catch { $text = '' }
+  }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    Write-Warning 'policy.yaml 缺失或不可读，使用内置默认策略（与线上 recommendation 一致）'
+    $text = $defaultText
+  }
+  $canonical = (($text -split "`r?`n" | ForEach-Object { $_.TrimEnd() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') }) -join "`n").Trim()
+  $policyHash = Get-Sha256Hex $canonical
+  $map = @{}
+  foreach ($line in @($canonical -split "`n")) {
+    if ($line -match '^\s*([A-Z_]+):\s*(ALLOW|REVIEW|BLOCK)\s*$') { $map[$matches[1]] = $matches[2] }
+  }
+  return [pscustomobject]@{ path = $policyPath; text = $canonical; hash = $policyHash; version = '1.0'; map = $map }
+}
+
 function Write-SelfHashes {
   # 重算核心文件（除 scan.ps1 自身）与 Exception Asset 的 SHA-256，重写 scan.ps1 两个标记块
   $skillDir = Split-Path $PSScriptRoot -Parent
@@ -670,6 +702,9 @@ if (-not (Get-RegistryRules)) {
   Write-Output '错误: 规则注册表加载失败（rules/rules.yaml 缺失或解析失败），拒绝运行'
   exit 2
 }
+# Phase 6A：Decision Policy 层（只负责 severity → decision recommendation；不影响 score/finding/evidence）
+$policyConfig = Get-PolicyConfig
+$policyHash = $policyConfig.hash
 if ($RebakeSelfHashes) { Write-SelfHashes; exit 0 }
 if ($RegistryStats) { Write-RegistryStats; exit 0 }
 
@@ -1318,6 +1353,9 @@ function Read-Baseline {
   param([string]$path)
   $fp = @{}
   $manifests = @{}
+  $scannerHash = $null
+  $rulesHashB = $null
+  $policyHashB = $null
   if (-not (Test-Path -LiteralPath $path)) { return [pscustomobject]@{ Fp = $fp; Manifests = $manifests } }
   $entries = New-Object System.Collections.ArrayList
   $cur = $null
@@ -1326,6 +1364,9 @@ function Read-Baseline {
   foreach ($line in @(Get-Content -Encoding UTF8 -LiteralPath $path)) {
     $t = $line.Trim()
     if ($t -eq '' -or $t.StartsWith('#')) { continue }
+    if ($t -match '^scanner_hash:\s*(\S+)') { $scannerHash = $matches[1]; continue }
+    if ($t -match '^rules_hash:\s*(\S+)') { $rulesHashB = $matches[1]; continue }
+    if ($t -match '^policy_hash:\s*(\S+)') { $policyHashB = $matches[1]; continue }
     if ($t -eq 'manifests:') { $inManifests = $true; continue }
     if ($inManifests) {
       if ($t -match '^-\s*file:\s*(.+)$') {
@@ -1350,7 +1391,7 @@ function Read-Baseline {
   foreach ($e in $entries) {
     if ($e.ContainsKey('fingerprint')) { $fp[$e['fingerprint']] = $true }
   }
-  return [pscustomobject]@{ Fp = $fp; Manifests = $manifests }
+  return [pscustomobject]@{ Fp = $fp; Manifests = $manifests; scanner_hash = $scannerHash; rules_hash = $rulesHashB; policy_hash = $policyHashB }
 }
 
 function Write-BaselineFile {
@@ -1359,6 +1400,9 @@ function Write-BaselineFile {
   [void]$sb.AppendLine('# skillspector-scan baseline（自动生成，请勿随意手工编辑）')
   [void]$sb.AppendLine('# 生成时间: ' + (Get-Date -Format o))
   [void]$sb.AppendLine('version: 1')
+  [void]$sb.AppendLine('scanner_hash: ' + (Get-HashOfFile $scriptPath))
+  [void]$sb.AppendLine('rules_hash: ' + (Get-RegistryHashes).rules_hash)
+  [void]$sb.AppendLine('policy_hash: ' + $policyHash)
   [void]$sb.AppendLine('findings:')
   foreach ($f in $findings) {
     $rel = $f.file.Substring($root.Length).TrimStart('\', '/')
@@ -2000,6 +2044,8 @@ function Invoke-ScanPath {
   $result.score = $score
   $result.severity = $sev
   $result.recommendation = $rec
+  # Phase 6A：Decision Recommendation（策略建议；不改 score/severity/finding/evidence/ranking）
+  $result.decision_recommendation = if ($policyConfig.map.ContainsKey($sev)) { $policyConfig.map[$sev] } else { 'REVIEW' }
   $result.hasExecutable = $hasExec
   if ($briefMode) {
     foreach ($fd in $findings) {
@@ -2452,7 +2498,7 @@ function Get-LedgerReasonCode {
 
 function New-InspectionLedger {
   # 旁路审计层：从既有 targets（engines/errors）派生 inspection[]，不创建/修改 Finding/Evidence，不参与评分
-  param([object[]]$targets, [string]$runTs, [string]$scannerV, [string]$rulesV, [string]$policyV)
+  param([object[]]$targets, [string]$runTs, [string]$scannerV, [string]$rulesV, [string]$policyV, [string]$policyHash)
   $ids = @()
   foreach ($t in $targets) {
     $tid = if ($null -ne $t.target_id -and [string]$t.target_id) { [string]$t.target_id } else { (Get-TargetIdentity $t.root).identity }
@@ -2460,7 +2506,7 @@ function New-InspectionLedger {
   }
   $ids = @($ids | Sort-Object)
   $fp = Get-Sha256Hex ($ids -join "`n")
-  $runId = Get-Sha256Hex ($fp + '|' + $scannerV + '|' + $rulesV + '|' + $policyV + '|' + $runTs)
+  $runId = Get-Sha256Hex ($fp + '|' + $scannerV + '|' + $rulesV + '|' + $policyV + '|' + $policyHash + '|' + $runTs)
   $entries = New-Object System.Collections.ArrayList
   foreach ($t in $targets) {
     $tid = if ($null -ne $t.target_id -and [string]$t.target_id) { [string]$t.target_id } else { (Get-TargetIdentity $t.root).identity }
@@ -2513,6 +2559,7 @@ function New-InspectionLedger {
         engine = $k
         status = $status
         reason_code = $rc
+        policy_hash = $policyHash
         coverage = $null
         started_at = $null
         finished_at = $null
@@ -2598,7 +2645,7 @@ function Get-VerificationStatus {
     $curFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $man.files)
     $oldFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $v.files)
     $sameFiles = ($curFiles -eq $oldFiles)
-    $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version) -and ($v.schema_hash -eq $hashes.schema_hash)
+    $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version) -and ($v.schema_hash -eq $hashes.schema_hash) -and ([string]$v.policy_hash -eq [string]$policyHash)
     # Phase 7A：结果指纹绑定（旧记录无指纹字段 → 无法证明结果一致，视为未绑定）
     $unbound = [string]::IsNullOrEmpty([string]$v.finding_fingerprint) -or [string]::IsNullOrEmpty([string]$v.evidence_fingerprint)
     $sameFp = $false
@@ -2656,6 +2703,9 @@ function Invoke-MarkVerified {
     report_fingerprint = (Get-Sha256Hex (ConvertTo-CanonicalJson $fpInput))
     finding_fingerprint = $resultFp.finding_fingerprint
     evidence_fingerprint = $resultFp.evidence_fingerprint
+    policy_version = $policyVersion
+    policy_hash = $policyHash
+    reviewer = $(if ($Reviewer) { $Reviewer } else { 'anonymous' })
     target_identity = $ti.identity
     analysis_status = 'complete'
     files = $man.files
@@ -2994,6 +3044,10 @@ if ($PrePublish) {
     exit 2
   }
 }
+if ($Reviewer -and -not $MarkVerified) {
+  [Console]::Error.WriteLine('错误: -Reviewer 仅可与 -MarkVerified 配对使用（当前缺少 -MarkVerified）')
+  exit 2
+}
 if ($MarkVerified) {
   if (-not $Path) {
     [Console]::Error.WriteLine('错误: -MarkVerified 必须与 -Path <skill> 配对使用')
@@ -3050,8 +3104,17 @@ if ($Baseline -and -not $InitBaseline) {
       $hadError = $true
     } else {
       $bl = Read-Baseline $Baseline
-      $global:baselineFp = $bl.Fp
-      $global:baselineManifests = $bl.Manifests
+      # Phase 6A：基线版本绑定——scanner/rules/policy 任一变化即禁用旧 suppression（不能静默通过）
+      $hashes = Get-RegistryHashes
+      $envOk = ([string]$bl.scanner_hash -eq (Get-HashOfFile $scriptPath)) -and ([string]$bl.rules_hash -eq $hashes.rules_hash) -and ([string]$bl.policy_hash -eq [string]$policyHash)
+      if ($envOk) {
+        $global:baselineFp = $bl.Fp
+        $global:baselineManifests = $bl.Manifests
+      } else {
+        Write-Warning '基线版本与当前 scanner/rules/policy 不匹配，旧 suppression 已禁用（请重新 -InitBaseline）'
+        $global:baselineFp = @{}
+        $global:baselineManifests = @{}
+      }
     }
   }
 }
@@ -3230,11 +3293,11 @@ if ($Brief -and $Interactive -and -not $Json -and $reports.Count -gt 1) {
 
 if ($Json) {
   $runTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-  $ledger = New-InspectionLedger -targets @($reports) -runTs $runTs -scannerV $scannerVersion -rulesV ([string]$registry.rules_version) -policyV $policyVersion
+  $ledger = New-InspectionLedger -targets @($reports) -runTs $runTs -scannerV $scannerVersion -rulesV ([string]$registry.rules_version) -policyV $policyVersion -policyHash $policyHash
   $jsonObj = [ordered]@{
     version = 1
     generated = (Get-Date -Format o)
-    audit = [ordered]@{ inspection_run_id = $ledger.run_id; audit_root = $null }
+    audit = [ordered]@{ inspection_run_id = $ledger.run_id; audit_root = $null; policy_hash = $policyHash }
     inspection = @($ledger.entries)
     targets = @($reports)
   }
