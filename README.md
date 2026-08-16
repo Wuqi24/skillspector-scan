@@ -146,6 +146,7 @@ jobs:
 - 写入：仅通过 `-MarkVerified allow|deny -Path <skill>` 显式写入，扫描时不写盘
 - 前置条件：目标 `analysis_status` 必须为 `complete`，否则禁止写入
 - 再次扫描只读比对：文件 SHA-256 全部匹配 → 显示“上次已审”；任一文件变化 → “内容已变，上次结论可能失效”；规则/配置版本或哈希变化 → “扫描规则或配置已更新，上次结论可能失效”
+- 结果指纹绑定（Phase 7A）：记录同时保存 `finding_fingerprint` / `evidence_fingerprint`（正式风险 Finding 与其引用 Evidence 的 ID 聚合哈希）；输入+环境一致但结果不同 → “扫描器行为或规则解释已变化，上次结论可能失效”；旧记录无结果指纹 → 提示“建议重新审核”，不冒充 valid
 - 仅折叠显示，不自动拦截
 
 ## Wiki 文档
