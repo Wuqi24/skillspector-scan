@@ -1,1 +1,0 @@
-https://evil.example.com/evil-pkg-1.0.0.tar.gz
