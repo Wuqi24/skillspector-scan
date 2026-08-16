@@ -149,7 +149,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = 'A35F96866F524939B7F044192D6C806073EAE10077D34A6B866185922F2A8E31'
+  'scripts/test.ps1' = '9848A39F23EA8AC6A0709C3A93EC99E0E80C15CF65E4EC4E872E2B6FAFE6F87B'
 }
 # __SELF_HASHES_END__
 # __EXCEPTION_ASSET_HASHES_BEGIN__
@@ -2045,7 +2045,10 @@ function Invoke-ScanPath {
   $result.severity = $sev
   $result.recommendation = $rec
   # Phase 6A：Decision Recommendation（策略建议；不改 score/severity/finding/evidence/ranking）
-  $result.decision_recommendation = if ($policyConfig.map.ContainsKey($sev)) { $policyConfig.map[$sev] } else { 'REVIEW' }
+  $decisionRec = if ($policyConfig.map.ContainsKey($sev)) { $policyConfig.map[$sev] } else { 'REVIEW' }
+  $result.decision_recommendation = $decisionRec
+  # Phase 6B：decision_reason 与 decision_recommendation 同源（Policy evaluation 产物，渲染层只读）
+  $result.decision_reason = @(('severity=' + $sev), ('policy_rule=' + $sev + '_TO_' + $decisionRec))
   $result.hasExecutable = $hasExec
   if ($briefMode) {
     foreach ($fd in $findings) {
@@ -2951,6 +2954,7 @@ function Render-BriefOne {
   $tt = if ($r.target_type) { $r.target_type } else { 'unknown' }
   [void]$lines.Add('▸ Target Type: ' + $tt)
   if ($tt -ne 'skill') { [void]$lines.Add('▸ Warning: not recognized as isolated skill（未识别为独立技能）') }
+  [void]$lines.Add('▸ 决策建议（Decision Recommendation）: ' + $r.decision_recommendation)
   [void]$lines.Add('▸ analysis_status: ' + $r.analysis_status)
   if ($r.engines) {
     $offEng = @($r.engines.PSObject.Properties | Where-Object { $_.Value -notin @('on', 'available') } | ForEach-Object { $_.Name + '=' + $_.Value })
@@ -3192,12 +3196,14 @@ foreach ($r in $reports) {
     foreach ($e in $r.errors) { [void]$outLines.Add(('[ERR] ' + $e)) }
     [void]$outLines.Add(('==== 小结: score={0} / {1}（{2}）| 有效 {3} | 文档语境 {4} | 基线抑制 {5} | 跳过 {6} | 错误 {7} ====' -f `
       $r.score, $r.severity, $r.recommendation, $eff.Count, $docCount, $suppCount, $r.skipped.Count, $r.errors.Count))
+    [void]$outLines.Add(('==== 决策建议（Decision Recommendation）: ' + $r.decision_recommendation + ' ===='))
     if ($r.engines) {
       [void]$outLines.Add(('==== 检查器: ' + (@($r.engines.PSObject.Properties | ForEach-Object { $_.Name + '=' + $_.Value }) -join ' / ')))
     }
   } else {
     [void]$outLines.Add(('▸ 结论: score={0} / {1}（{2}）| 有效 {3}（CRITICAL {4} / HIGH {5} / MED {6} / LOW {7}）' -f `
       $r.score, $r.severity, $r.recommendation, $eff.Count, $scC, $scH, $scM, $scL))
+    [void]$outLines.Add(('▸ 决策建议（Decision Recommendation）: ' + $r.decision_recommendation))
     $plainTop = if ($r.topCategories -and @($r.topCategories).Count -gt 0) { @($r.topCategories)[0] } else { '' }
     $plainDesc = $plainTop
     if ($plainTop -match '^[^(]+\(([^)]+)\)') { $plainDesc = $matches[1] }
@@ -3253,8 +3259,8 @@ if ($reports.Count -gt 1) {
     $scL = if ($sc) { [int]$sc.LOW } else { 0 }
     $top1 = if ($r.topCategories -and @($r.topCategories).Count -gt 0) { @($r.topCategories)[0] } else { '-' }
     $sn = if ($r.skill_name) { $r.skill_name } else { $r.path }
-    [void]$outLines.Add(($mark + '{0} | {1} | {2} | {3} | 有效 {4} | C{5}/H{6}/M{7}/L{8} | 重点 {9} | 跳过 {10}' -f `
-      $sn, $r.score, $r.severity, $r.recommendation, $eff, $scC, $scH, $scM, $scL, $top1, $r.skipped.Count))
+    [void]$outLines.Add(($mark + '{0} | {1} | {2} | {3} | 有效 {4} | C{5}/H{6}/M{7}/L{8} | 重点 {9} | 跳过 {10} | 建议 {11}' -f `
+      $sn, $r.score, $r.severity, $r.recommendation, $eff, $scC, $scH, $scM, $scL, $top1, $r.skipped.Count, $r.decision_recommendation))
   }
 }
 [void]$outLines.Add('==== 扫描完成 ====')
@@ -3268,8 +3274,16 @@ if ($reports.Count -gt 1) {
       $n++
       $sn = if ($r.skill_name) { $r.skill_name } else { '-' }
       $tt = if ($r.target_type) { $r.target_type } else { 'unknown' }
-      [void]$outLines.Add(('[{0}] {1} | type={2} | skill={3} | status={4} | {5} | {6}' -f $n, $r.path, $tt, $sn, $r.analysis_status, (Get-BriefRiskSummary $r), (Get-VerificationText $r.verification)))
+      [void]$outLines.Add(('[{0}] {1} | type={2} | skill={3} | status={4} | {5} | {6} | 建议 {7}' -f $n, $r.path, $tt, $sn, $r.analysis_status, (Get-BriefRiskSummary $r), (Get-VerificationText $r.verification), $r.decision_recommendation))
     }
+    # Phase 6B：多 target 汇总使用 policy aggregation（BLOCK > REVIEW > ALLOW）；仅展示投影，不改单 target decision
+    $aggPrio = @{ BLOCK = 3; REVIEW = 2; ALLOW = 1 }
+    $aggDec = 'ALLOW'
+    foreach ($r in $reports) {
+      $d = [string]$r.decision_recommendation
+      if ($aggPrio.ContainsKey($d) -and $aggPrio[$d] -gt $aggPrio[$aggDec]) { $aggDec = $d }
+    }
+    [void]$outLines.Add(('汇总决策建议（policy aggregation）: ' + $aggDec))
     if ($Interactive) { [void]$outLines.Add('输入序号查看详情，all 全部展开，q 退出') }
   }
   [void]$outLines.Add('==== 扫描完成 ====')

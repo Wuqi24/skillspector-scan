@@ -1339,6 +1339,55 @@ subprocess.run(os.environ["CMD"], shell=True)
     Write-Host ("OK T84 Reviewer Audit（reviewer=" + $rec84.reviewer + " decision=" + $rec84.decision + "）")
   }
   if ($vp84) { Remove-Item -LiteralPath $vp84 -Force -ErrorAction SilentlyContinue }
+
+  # 85) Renderer Decision Projection：JSON / 普通 CLI / Brief 的 decision_recommendation 一致
+  $t85 = Join-Path $tmp 't85'
+  $s85 = Join-Path $t85 'target-skill85'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s85 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s85 'SKILL.md') -Value "---`nname: target-skill85`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s85 'scripts\run.py') -Value "print('hi')"
+  $r85j = Invoke-ScanJson $s85
+  $d85 = [string]$r85j.Target.decision_recommendation
+  $txt85 = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $s85 2>&1 | Out-String
+  $brief85 = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Path $s85 -Brief 2>&1 | Out-String
+  $mN85 = [regex]::Match($txt85, '决策建议（Decision Recommendation）:\s*(\S+)')
+  $mB85 = [regex]::Match($brief85, '决策建议（Decision Recommendation）:\s*(\S+)')
+  if (-not $mN85.Success -or -not $mB85.Success -or $mN85.Groups[1].Value -cne $d85 -or $mB85.Groups[1].Value -cne $d85) {
+    Write-Host ("FAIL T85 渲染投影: json=" + $d85 + " cli=" + $(if ($mN85.Success) { $mN85.Groups[1].Value } else { '-' }) + " brief=" + $(if ($mB85.Success) { $mB85.Groups[1].Value } else { '-' })); $fail++
+  } else { Write-Host ("OK T85 Renderer Decision Projection（JSON/CLI/Brief 一致：" + $d85 + "）") }
+
+  # 86) Decision Reason：reason 存在、policy_rule 与映射一致；改 policy → reason 同步
+  $t86 = Join-Path $tmp 't86'
+  $s86 = Join-Path $t86 'target-skill86'
+  New-Item -ItemType Directory -Force -Path (Join-Path $s86 'scripts') | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s86 'SKILL.md') -Value "---`nname: target-skill86`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $s86 'scripts\run.py') -Value "print('hi')"
+  $r86a = Invoke-ScanJson $s86
+  $reason86a = @($r86a.Target.decision_reason)
+  $scanner86 = Join-Path $t86 'scanner-copy86'
+  Copy-Item -Recurse -Force -LiteralPath (Split-Path $PSScriptRoot -Parent) $scanner86
+  Set-Content -Encoding UTF8 -LiteralPath (Join-Path $scanner86 'data\policy.yaml') -Value "version: 1`ndecision_map:`n  LOW: BLOCK`n  MEDIUM: REVIEW`n  HIGH: BLOCK`n  CRITICAL: BLOCK"
+  $rep86 = Join-Path $tmp 'p86.json'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scanner86 'scripts\scan.ps1') -Path $s86 -Json -Output $rep86 2>$null
+  $obj86 = Get-Content -Raw -Encoding UTF8 -LiteralPath $rep86 | ConvertFrom-Json
+  $reason86b = @($obj86.targets[0].decision_reason)
+  if ($reason86a -notcontains 'severity=LOW' -or $reason86a -notcontains 'policy_rule=LOW_TO_ALLOW' -or $reason86b -notcontains 'policy_rule=LOW_TO_BLOCK') {
+    Write-Host ("FAIL T86 decision reason: a=" + ($reason86a -join ',') + " b=" + ($reason86b -join ',')); $fail++
+  } else { Write-Host 'OK T86 Decision Reason（severity + policy_rule，改 policy 同步）' }
+  Remove-Item -Recurse -Force $scanner86 -ErrorAction SilentlyContinue
+
+  # 87) Multi-target Decision Aggregation：ALLOW+BLOCK → 汇总 BLOCK；单 target 独立
+  $t87 = Join-Path $tmp 't87'
+  $multi87 = Join-Path $t87 'multi'
+  New-Item -ItemType Directory -Force -Path "$multi87\skill-a87" | Out-Null
+  New-Item -ItemType Directory -Force -Path "$multi87\skill-b87" | Out-Null
+  Set-Content -Encoding UTF8 -LiteralPath "$multi87\skill-a87\SKILL.md" -Value "---`nname: skill-a87`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath "$multi87\skill-b87\SKILL.md" -Value "---`nname: skill-b87`ndescription: t`n---`n# t"
+  Set-Content -Encoding UTF8 -LiteralPath "$multi87\skill-b87\evil.py" -Value "import os, subprocess`nsubprocess.run(os.environ['CMD'], shell=True)"
+  $out87 = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Dir $multi87 -Brief 2>&1 | Out-String
+  if ($out87 -notmatch '建议 ALLOW' -or $out87 -notmatch '建议 BLOCK' -or $out87 -notmatch '汇总决策建议（policy aggregation）: BLOCK') {
+    Write-Host 'FAIL T87 多 target 聚合（ALLOW+BLOCK → 汇总 BLOCK）'; $fail++
+  } else { Write-Host 'OK T87 Multi-target Decision Aggregation（汇总 BLOCK，单 target 独立）' }
 } finally {
   $env:CODEX_HOME = $oldCodexHome
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
