@@ -1,109 +1,111 @@
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.en.md) | [简体中文](README.md)
 
-# skillspector-scan
-
+# skillspector-scan 中文文档
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Release](https://img.shields.io/github/v/release/Wuqi24/skillspector-scan)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
 ![GitHub stars](https://img.shields.io/github/stars/Wuqi24/skillspector-scan?style=social)
 ![GitHub last commit](https://img.shields.io/github/last-commit/Wuqi24/skillspector-scan)
 
+**Repository / Runtime skill ID**: `skillspector-scan`
+
 **Audit AI agent skills individually.**
 
-An offline, evidence-driven, auditable static security scanner for AI agent skills (Codex skills). It reviews local skills one by one and detects 16+ risk categories — prompt injection, data exfiltration, supply-chain, dangerous code calls, and more — producing easy-to-read security reports. The minimal audit unit is a **single skill**: 1 skill → 1 Target → 1 Scan Result → 1 review decision. It never installs or executes any script from the target skill; risk labels are automatic inference, not a substitute for human review.
+**AI Agent Skill 的离线静态安全审查器**：默认全离线、证据驱动、可审计；风险标签为自动推断，安装决策由人裁决。
 
-## What It Is
+离线静态安全审查工具：逐个审核本地 AI Agent 技能（Codex skill），识别提示注入、数据外泄、供应链、危险代码调用等 16+ 类风险，输出通俗安全报告。最小审核单位是**单个 skill**：一个 skill → 一个 Target → 一个 Scan Result → 一个审核决策。不安装、不运行目标技能的任何脚本；风险标签为自动推断，不替代人工裁决。
 
-`skillspector-scan` is a static security review skill that runs inside the Codex skill system, and also ships a standalone script `scripts/scan.ps1` for local review before installing third-party skills.
+## 🎯 这是什么
 
-Covered risk categories (detailed checks in [references/checklist.md](references/checklist.md)):
+`skillspector-scan` 是运行在 Codex 技能体系中的静态安全审查技能，也提供独立脚本 `scripts/scan.ps1`，可在安装第三方技能前做本地审查。
 
-- Instructions & behavior: prompt injection, refusal-evasion/jailbreak, system prompt leakage, memory poisoning, excessive autonomy, trigger-word abuse, untrusted external instruction sources (OWASP AST05)
-- Data & network: data exfiltration, tainted outbound transfer, SSRF (cloud metadata / internal network / loopback), agent spying
-- Code & supply-chain: unpinned versions, remote scripts, obfuscation, known vulnerabilities, look-alike packages, dangerous calls (exec/eval/subprocess), privilege escalation, persistence, tool abuse
-- Metadata & ecosystem: manifest consistency, symlink escape, MCP least-privilege / tool poisoning, known malware signatures (webshell / cryptominer / reverse shell), manifest changes (rug-pull)
+覆盖风险类别（详细检查点见 [references/checklist.md](references/checklist.md)）：
 
-## Features
+- 指令与行为：提示注入、反拒答/越狱、系统提示泄露、记忆投毒、过度自主权、触发词滥用、外部指令来源（OWASP AST05）
+- 数据与网络：数据外泄、污点外传、SSRF（云 metadata/内网/回环）、Agent 窥探
+- 代码与供应链：未锁版本、远程脚本、混淆、已知漏洞、仿冒包、危险调用（exec/eval/subprocess）、提权、持久化、工具滥用
+- 元数据与生态：manifest 一致性、符号链接越界、MCP 最小权限/工具投毒、已知恶意特征（webshell/矿机/反弹 shell）、清单变化（rug-pull）
 
-- Fully offline: the only optional network feature is `-CheckCVE` (OSV.dev lookup, auto-degrades to offline on failure)
-- Skill granularity: a skill is the minimal audit unit; `-Path` pointing to a repo/collection auto-detects skill roots (SKILL.md) and splits per skill; plain directories are still scanned but flagged as "not recognized as an isolated skill"
-- Static read-only: no sandbox, no auto-block, no auto-sanitization
-- Per-file single read + multi-stage specialized checks + encoding detection (UTF-8/UTF-16/GBK) + context annotation + comment-aware lexical analysis
-- Python AST/lightweight taint analysis, JS behavior heuristics, base64 payload decode re-check, symlink escape detection, git-history secret detection, manifest-change detection
-- Dependency pinning and offline dependency analysis (source allowlist, typo-squatting, install-script hooks, dependency-count thresholds)
-- Brief mode (`-Brief`): behavior summary → worst-case TOP3 → detailed findings → reference findings → dependency risks; every hit includes "fact + inference"
-- Verified records (`-MarkVerified`): file SHA-256 manifest + conclusion + date; content changes automatically invalidate conclusions
-- Inspection Ledger (Phase 4B): `audit.inspection_run_id` + `inspection[]` (engine lifecycle + frozen reason_code), a side-channel record that never changes scoring/evidence
-- Pre-publish gate (`-PrePublish`): blacklisted files (.env/secret files) + content that looks like secrets + git-history secrets; warn-only, not blocking. Known expectation: content checks flag fake test secrets in `scripts/test.ps1` (e.g., `sk-prepubtest...`) — expected; confirm the masked value is test data before release
-- Optional external scanner adapters: auto-invokes `aguara` / `skill-scanner` when detected and merges hits (`EXT_AGUARA` / `EXT_SKILLSCANNER`); SKIP (not error) when missing; `-NoExt` disables
-- JSON reports include `engines` checker status (regex/multi/lexer/python_ast/js/deps/osv/git_history/manifest/external_*, on/skipped/disabled/degraded)
-- JSON output (`-Json`), batch (`-AllInstalled`/`-Dir`), parallel (`-Parallel`), baseline false-positive suppression (`-Baseline`), dependency checks (`-CheckDeps`)
+## ✨ 特性
 
-## Installation
+- 全离线：唯一可联网项是可选 `-CheckCVE`（OSV.dev 查询，失败自动降级离线）
+- 技能粒度：skill 是最小审核单位；`-Path` 指向仓库/集合目录时自动识别技能根（SKILL.md）并按技能拆分，普通目录仍可扫描但标注“未识别为独立技能”
+- 静态只读：无沙箱、无自动拦截、无自动净化
+- 逐文件单次读取 + 专项多阶段检查 + 编码探测（UTF-8/UTF-16/GBK）+ 语境标注 + 注释词法识别
+- Python AST/轻量污点分析、JS 行为启发式、base64 载荷解码复查、符号链接越界检测、git 历史密钥检测、manifest 变化检测
+- 依赖锁定与离线依赖分析（来源白名单、拼写欺诈、安装脚本钩子、依赖数阈值）
+- 简报模式（`-Brief`）：行为概要 → 最坏情况 TOP3 → 详细发现 → 参考发现 → 依赖风险，每条命中带“事实 + 推断”
+- 已审记录（`-MarkVerified`）：文件 SHA-256 清单 + 结论 + 日期，内容变化自动提示结论失效
+- Inspection Ledger（Phase 4B）：`audit.inspection_run_id` + `inspection[]`（engine 生命周期 + 冻结 reason_code），旁路记录不改变评分/证据
+- 发布前门禁（`-PrePublish`）：黑名单文件（.env/密钥文件）+ 内容疑似密钥 + git 历史疑似密钥，只提醒不拦截；已知预期：内容检查会提示 `scripts/test.ps1` 中的测试假密钥（如 `sk-prepubtest...`），属预期，人工确认打码值为测试数据后放行
+- 可选外部扫描器适配：检测到 `aguara` / `skill-scanner` 时自动调用并合并命中（`EXT_AGUARA`/`EXT_SKILLSCANNER`），缺失 SKIP 不报错，`-NoExt` 关闭
+- JSON 报告含 `engines` 检查器状态（regex/multi/lexer/python_ast/js/deps/osv/git_history/manifest/external_*，on/skipped/disabled/degraded）
+- JSON 输出（`-Json`）、批量（`-AllInstalled`/`-Dir`）、并行（`-Parallel`）、基线误报抑制（`-Baseline`）、依赖检查（`-CheckDeps`）
+
+## 🚀 安装
 
 ```powershell
-# 1. Clone directly into the Codex skills directory (repo name = skill name)
+# 1. 直接克隆到 Codex 技能目录（仓库名 = 技能名）
 git clone https://github.com/Wuqi24/skillspector-scan.git "$HOME\.codex\skills\skillspector-scan"
 
-# 2. Or download the release package skillspector-scan-vX.Y.Z.zip from GitHub Releases
-#    (no test fixtures / CI files) and extract it to "$HOME\.codex\skills\skillspector-scan"
-#    (the zip top level is the skill directory)
+# 2. 或从 GitHub Release 下载安装包 skillspector-scan-vX.Y.Z.zip（不含测试夹具与 CI 文件），
+#    解压到 "$HOME\.codex\skills\skillspector-scan"（zip 顶层即为技能目录）
 
-# 3. Can also be used as a standalone script without Codex (after entering the skill directory)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory>
+# 3. 安装后也可以直接作为独立脚本使用，不依赖 Codex（进入技能目录后）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录>
 ```
 
-Dependencies: PowerShell 5.1+ (7 recommended). Python optional: used for AST/taint analysis; when missing it auto-degrades to regex and marks the report; use `-Python <path>` to specify, `-NoAst` to disable.
+依赖：PowerShell 5.1+（建议 7）。Python 可选：用于 AST/污点分析，缺失时自动降级为正则并在报告标注；可用 `-Python <路径>` 指定，`-NoAst` 关闭。
 
-## Usage
+## 🛠️ 使用
 
-**Path semantics**: `-Path` is interpreted as a single skill first (SKILL.md detected → outputs `Target Type: skill`); pointing to a repo/category containing multiple skills auto-splits into independent skill Targets (with a Warning; `-Interactive` lets you choose first); plain directories are still scanned but flagged `not recognized as isolated skill`. `-Dir` = scan multiple skills in a directory; `-AllInstalled` = review all installed skills one by one (recommended entry point).
+**入口语义**：`-Path` 优先解释为单个技能（检测到 SKILL.md 即输出 `Target Type: skill`）；指向含多个技能的仓库/分类目录时自动拆分为多个独立技能 Target（附 Warning，`-Interactive` 可先选择）；普通目录仍可扫描，但标注 `not recognized as isolated skill`。`-Dir` = 扫描目录中的多个技能；`-AllInstalled` = 逐个审核所有已安装技能（推荐入口）。
 
 ```powershell
-# Basic scan (text report; exit code 0 ok / 1 target >50 points / 2 error)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory>
+# 基本扫描（文本报告；退出码 0 正常 / 1 有 >50 分目标 / 2 出错）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录>
 
-# Scan all installed skills (excludes .system)
+# 扫描所有已安装技能（排除 .system）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -AllInstalled
 
-# Batch scan uninstalled skills (each subdir/zip counts as a target; add -Parallel)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Dir <skills-folder>
+# 批量扫描未安装技能（每个子目录/zip 各算一个目标，可加 -Parallel）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Dir <技能文件夹>
 
-# Brief mode (facts / inference two-part report)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory> -Brief
+# 简报模式（事实/推断两段式）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -Brief
 
-# JSON output (CI-friendly)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory> -Json -Output report.json
+# JSON 输出（可接 CI）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -Json -Output report.json
 
-# Write a verified record after human review (full scan only; writes to skill root .verified/; honors CODEX_HOME, falls back to ~/.codex/skills/.verified/)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified allow -Path <skill-directory>
+# 人工裁决后写入已审记录（仅完整扫描可写，写入技能根 .verified/；尊重 CODEX_HOME，回退 ~/.codex/skills/.verified/）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -MarkVerified allow -Path <技能目录>
 
-# Pre-publish gate (blacklisted files + content-looking secrets + git history; exit 0=pass / 1=risk / 2=argument error)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <release-source-directory> -PrePublish
-# Note: content checks flag fake test secrets in scripts/test.ps1 (e.g., sk-prepubtest...) — expected; confirm masked values are test data before release
+# 发布前门禁检查（黑名单文件 + 内容疑似密钥 + git 历史；exit 0=通过 / 1=有风险 / 2=参数错误）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <发布源目录> -PrePublish
+# 注：内容检查会提示 scripts/test.ps1 中的测试假密钥（如 sk-prepubtest...），属预期；人工确认打码值为测试数据后放行
 
-# Baseline suppression of false positives
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory> -InitBaseline
+# 基线抑制误报
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -InitBaseline
 
-# Optional: check pinned dependencies for known vulnerabilities online (OSV.dev; auto-degrades offline)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory> -CheckCVE
+# 可选：联网查已锁定依赖的已知漏洞（OSV.dev，离线自动降级）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -CheckCVE
 
-# Optional: scan git history for secrets that appeared in recent commits
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <skill-directory> -GitHistory
+# 可选：扫描 git 历史中最近提交里出现过的疑似密钥
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -Path <技能目录> -GitHistory
 
-# Check checker availability (Python/git/aguara/skill-scanner/registry; no scan)
+# 检查各检查器可用性（Python/git/aguara/skill-scanner/注册表；不扫描）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/scan.ps1 -CheckDeps
 ```
 
-In PowerShell 7, replace the leading `powershell` with `pwsh`. Scanning `.zip` directly is supported (with member count and total extraction size limits to prevent zip bombs).
+PowerShell 7 环境把开头的 `powershell` 换成 `pwsh` 即可。支持直接扫描 `.zip`（带成员数与解压总量上限，防 zip 炸弹）。
 
-## Cloud CI Scanning (no local environment)
+## ☁️ 云端 CI 扫描（无本地环境）
 
-This repo provides a reusable GitHub Actions workflow: put any skill into any GitHub repository to scan it in the cloud — no local PowerShell / Python / git install required.
+本仓库提供可复用的 GitHub Actions workflow：把技能放进任意 GitHub 仓库，即可在云端扫描，无需本地安装 PowerShell / Python / git。
 
-**Reference from another repository (recommended)**
+**其他仓库引用（推荐）**
 
-Add a workflow in the target repository (e.g., `.github/workflows/scan-skill.yml`):
+在目标仓库添加 workflow（如 `.github/workflows/scan-skill.yml`）：
 
 ```yaml
 name: scan-skill
@@ -114,113 +116,113 @@ jobs:
       contents: read
     uses: Wuqi24/skillspector-scan/.github/workflows/skill-scan.yml@main
     with:
-      skill_path: '.'      # skill path to scan (relative to target repo root)
-      mode: prepublish     # prepublish=pre-release gate; full=full risk scan
+      skill_path: '.'      # 要扫描的技能路径（相对目标仓库根）
+      mode: prepublish     # prepublish=发布前门禁；full=完整风险扫描
 ```
 
-Parameters:
+参数：
 
-| Parameter | Default | Description |
+| 参数 | 默认 | 说明 |
 |:---|:---|:---|
-| `skill_path` | `.` | Skill/directory path to scan (relative to target repo root) |
-| `mode` | `prepublish` | `prepublish`=pre-release gate (blacklisted files + content + git-history secrets); `full`=full risk scan |
+| `skill_path` | `.` | 要扫描的技能/目录路径（相对目标仓库根） |
+| `mode` | `prepublish` | `prepublish`=发布前门禁（黑名单文件+内容+git 历史密钥）；`full`=完整风险扫描 |
 
-- The report is uploaded as artifact `skillspector-report` (downloadable from the Actions run page)
-- In `prepublish`, the job fails when risks are found (exit 1), acting as a release gate
-- If the target skill contains fake test secrets, `prepublish` flags them (expected); `full` is for ordinary risk scans
+- 报告以 artifact `skillspector-report` 上传（Actions 运行页可下载）
+- `prepublish` 检出风险时 job 失败（exit 1），作为发布门禁
+- 目标仓库技能若含测试假密钥，`prepublish` 会提示风险（属预期）；`full` 用于普通风险扫描
 
-**This repository itself**
+**本仓库自身**
 
-- Manual: Actions page → `skillspector-scan` → Run workflow (optional self-check / full regression / Docker build verification)
-- Release: pushing a `v*` tag auto-runs self-check + full regression + Docker build with malicious fixture verification
+- 手动：Actions 页面 → `skillspector-scan` → Run workflow（可选 自检 / 完整回归 / Docker 构建验证）
+- 发布：打 `v*` 标签自动运行 自检 + 完整回归 + Docker 构建与恶意夹具验证
 
-## Rule Registry
+## 📋 规则注册表
 
-Detection rules are a **frozen rule registry** [rules/rules.yaml](rules/rules.yaml), fixed after human review:
+检测规则是**冻结的规则注册表** [rules/rules.yaml](rules/rules.yaml)，人工审核后固定：
 
-- 36 unique detection/correlation rules (40 registry entries total, of which YRM multi-line malware signatures are 5 regex rules)
-- 4 helper hints (not counted as risks)
-- 11 brief-mode display projections
+- 36 条唯一检测/关联规则（注册表共 40 个规则条目，其中 YRM 多行恶意特征为 5 条 regex）
+- 4 条辅助提示（hints，不计入风险计数）
+- 11 条简报展示投影（projections）
 
-Normal mode and brief mode share the same rule source: the engine loads one registry; brief mode projects normal rule hits into more specific brief rules via `briefProjectionFrom` (e.g., E2 → SECRET_ENV_READ). No online updates, no runtime ingestion (the poison-library design was removed); changing a rule changes `rules_hash`, auto-invalidating old verified records, which must be re-reviewed.
+普通模式与简报模式共用同一规则源：引擎只加载一份注册表，简报通过 `briefProjectionFrom` 把普通规则命中投影为更具体的简报规则（如 E2 → SECRET_ENV_READ）。不支持联网更新、不支持运行时收录（已取消毒库设计）；修改规则会使 `rules_hash` 变化，旧已审记录自动提示失效，需重新审核。
 
-## Decision Policy
+## ⚖️ Decision Policy
 
-`data/policy.yaml` is an independent decision-policy layer: it only maps `severity/risk facts → decision_recommendation` (defaults: LOW→ALLOW, MEDIUM→REVIEW, HIGH/CRITICAL→BLOCK) and **contains no analyzer rules, regex, evidence generation, or score algorithms**.
+`data/policy.yaml` 是独立决策策略层：只负责 `severity/risk facts → decision_recommendation` 映射（默认：LOW→ALLOW、MEDIUM→REVIEW、HIGH/CRITICAL→BLOCK），**不包含 analyzer 规则、regex、evidence 生成或 score 算法**。
 
-- Outputs `target.decision_recommendation`: a machine-consumable enum suggestion (ALLOW / REVIEW / BLOCK); never modifies score / severity / finding / evidence / ranking
-- Display projection (Phase 6B): normal CLI and Brief outputs add a "Decision Recommendation" line that reads the result directly without a second judgment; multi-target brief summaries aggregate by policy (BLOCK > REVIEW > ALLOW) — display only, single-target decisions unchanged
-- `target.decision_reason[]`: generated from the same source as the decision (`severity=<SEVERITY>`, `policy_rule=<SEVERITY>_TO_<DECISION>`), auditable "why this suggestion"
-- `policy_hash` (canonical yaml → SHA-256) enters audit, inspection ledger, verified, and baseline; policy changes auto-invalidate old audit records
-- Human review: `-MarkVerified allow|deny -Reviewer <name>` records the reviewer; defaults to `anonymous`
+- 输出 `target.decision_recommendation`：机器可消费的枚举建议（ALLOW / REVIEW / BLOCK），不修改 score / severity / finding / evidence / ranking
+- 展示投影（Phase 6B）：普通 CLI 与 Brief 输出新增「决策建议（Decision Recommendation）」行，值直接读取结果、不做二次判断；多目标简报汇总按 policy aggregation（BLOCK > REVIEW > ALLOW），仅展示投影、不改变单目标决策
+- `target.decision_reason[]`：与决策同源生成（`severity=<SEVERITY>`、`policy_rule=<SEVERITY>_TO_<DECISION>`），可审计"为什么给出该建议"
+- `policy_hash`（canonical yaml → SHA-256）进入 audit、inspection ledger、verified 与 baseline；policy 修改后旧审计记录自动失效提示
+- 人工裁决：`-MarkVerified allow|deny -Reviewer <name>` 记录审核人，缺省 `anonymous`
 
-## Verified Records
+## 🗂️ 已审记录
 
-- Location: skill root `.verified/<skill>.json` (honors `CODEX_HOME`, falls back to `~/.codex/skills/.verified/`)
-- Written only explicitly via `-MarkVerified allow|deny -Path <skill>`; scans never write to disk
-- Prerequisite: target `analysis_status` must be `complete`, otherwise writes are forbidden
-- Rescan is read-only comparison: all file SHA-256 match → "previously verified"; any change → "content changed, previous conclusion may be invalid"; rule/config version or hash changed → "scan rules or config updated, previous conclusion may be invalid"
-- Result fingerprint binding (Phase 7A): records also store `finding_fingerprint` / `evidence_fingerprint` (aggregated hash of risk Finding IDs and their referenced Evidence IDs); identical input+environment but different result → "scanner behavior or rule interpretation changed, previous conclusion may be invalid"; old records without fingerprints → "recommend re-review", never pretend to be valid
-- Policy binding (Phase 6A): `policy_hash` change → old records show invalidation hints; records include `reviewer`
-- Display-only folding; never auto-blocks
+- 存储位置：技能根 `.verified/<skill>.json`（尊重 `CODEX_HOME`，回退 `~/.codex/skills/.verified/`）
+- 写入：仅通过 `-MarkVerified allow|deny -Path <skill>` 显式写入，扫描时不写盘
+- 前置条件：目标 `analysis_status` 必须为 `complete`，否则禁止写入
+- 再次扫描只读比对：文件 SHA-256 全部匹配 → 显示“上次已审”；任一文件变化 → “内容已变，上次结论可能失效”；规则/配置版本或哈希变化 → “扫描规则或配置已更新，上次结论可能失效”
+- 结果指纹绑定（Phase 7A）：记录同时保存 `finding_fingerprint` / `evidence_fingerprint`（正式风险 Finding 与其引用 Evidence 的 ID 聚合哈希）；输入+环境一致但结果不同 → “扫描器行为或规则解释已变化，上次结论可能失效”；旧记录无结果指纹 → 提示“建议重新审核”，不冒充 valid
+- Policy 绑定（Phase 6A）：`policy_hash` 变化 → 旧记录显示失效提示；记录含 `reviewer`（审计人）
+- 仅折叠显示，不自动拦截
 
-## Baseline
+## 📑 基线（Baseline）
 
-- `-InitBaseline` writes a false-positive suppression list; `-Baseline <file>` suppresses previously reviewed findings on rescan; `-ShowSuppressed` views them
-- Baseline files record `scanner_hash` / `rules_hash` / `policy_hash`: on any version mismatch, old suppressions are **disabled with a warning**, never silently applied (re-run `-InitBaseline`)
+- `-InitBaseline` 写入误报抑制清单，`-Baseline <file>` 复扫时抑制已复核发现，`-ShowSuppressed` 查看
+- 基线文件记录 `scanner_hash` / `rules_hash` / `policy_hash`：任一版本不匹配时**禁用旧 suppression** 并输出 warning，不静默通过（需重新 `-InitBaseline`）
 
-## Wiki Docs
+## 📚 Wiki 文档
 
-- [Home (overview & quick start)](https://github.com/Wuqi24/skillspector-scan/wiki)
-- [Usage](https://github.com/Wuqi24/skillspector-scan/wiki/Usage)
-- [Changelog](https://github.com/Wuqi24/skillspector-scan/wiki/Changelog)
+- [Home（总览与快速开始）](https://github.com/Wuqi24/skillspector-scan/wiki)
+- [使用指南（Usage）](https://github.com/Wuqi24/skillspector-scan/wiki/Usage)
+- [更新历程（Changelog）](https://github.com/Wuqi24/skillspector-scan/wiki/Changelog)
 - [FAQ](https://github.com/Wuqi24/skillspector-scan/wiki/FAQ)
-- [Rules](https://github.com/Wuqi24/skillspector-scan/wiki/Rules)
+- [规则库说明（Rules）](https://github.com/Wuqi24/skillspector-scan/wiki/Rules)
 
-## Testing
+## 🧪 测试
 
-> Test fixtures (`test/fixtures/`, `docker/fixtures/`) are **not part of the release tree**; they exist only for development and CI regression and are fetched from the separate `fixtures` branch.
+> 测试夹具（`test/fixtures/`、`docker/fixtures/`）**不属于 release tree**，只用于开发与 CI 回归，从独立 `fixtures` 分支获取。
 
 ```powershell
-# First restore fixtures (dev/regression only; normal use doesn't need them)
+# 先恢复夹具（仅开发/回归需要；普通使用无需夹具）
 git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-scan.git "$env:TEMP\skillspector-fixtures"
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\test\fixtures" test\
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\docker\fixtures" docker\
 
-# Then run the full regression (T1-T87)
+# 再跑全量回归（T1-T87）
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
-Regression covers malicious Python/JS detection, dependency pinning, self-scan 0 score, git-history secrets, brief/JSON output, parallel stats, Exception Asset integrity, etc. (T1-T73); all pass with exit code 0.
+回归覆盖恶意 Python/JS 检出、依赖锁定、自扫 0 分、git 历史密钥、简报/JSON 输出、并行统计、Exception Asset 完整性等断言（T1-T73），全部通过退出码 0。
 
-## Security Boundaries & Disclaimer
+## 🔒 安全边界与免责声明
 
-**Tool nature & boundaries**: heuristic static analysis — not security certification, not a security guarantee; cannot detect all risks (unknown patterns, obfuscated/encrypted content, runtime behavior, downstream supply-chain changes, etc.); risk labels are automatic inference, not a substitute for human review.
+**工具性质与边界**：启发式静态分析，不是安全认证、不构成安全保证；无法检测所有风险（未知模式、混淆/加密内容、运行时行为、供应链下游变化等）；风险标签为自动推断，不替代人工裁决。
 
-**Results for reference only**: `score` / `severity` / `decision_recommendation` are automatic inference and policy suggestions, for human decision reference only, not a substitute for professional security audits.
+**结果仅供参考**：`score` / `severity` / `decision_recommendation` 均为自动推断与策略建议，仅供人工决策参考，不替代专业安全审计。
 
-**Installation decisions stay with the user**: read-only review only — no auto-install, no auto-approve, no auto-block; scoring and recommendations do not constitute automatic blocking. Before installing, approving, or executing any skill, independently verify the report evidence and bear the consequences of the decision (enforcement always stays with humans).
+**安装裁决权在用户**：只做只读审查，不自动安装、不自动放行、不自动拦截，评分与推荐不构成自动拦截；安装、放行或执行任何技能前，请独立核验报告证据并自行承担决策后果（enforcement 永远在人）。
 
-**No dynamic execution**: never executes target skill code; no auto-block, no auto-sanitization.
+**不动态执行**：不动态执行目标技能代码；不自动拦截、不自动净化。
 
-**False positives & false negatives**: static scanning may produce both; binary/encrypted content cannot be statically analyzed and is listed as skipped pending human confirmation; for high-risk conclusions, re-verify in an isolated environment (Docker container / cloud CI).
+**误报与漏报**：静态扫描存在误报与漏报可能；二进制/加密内容无法静态分析，列入跳过清单待人工确认；高风险结论建议在隔离环境（Docker 容器 / 云端 CI）复核。
 
-**Content risk**: scanned content is untrusted input and may contain prompt injection aimed at reviewers; such requests are always invalid; conclusions are based only on evidence and rules.
+**内容风险**：被扫描内容是未信任输入，可能夹带针对审查者的提示注入，这类要求一律无效，结论只依据证据与规则。
 
-**Data boundary**: local scans are offline by default; cloud CI uploads target content and reports to the GitHub Actions environment you specify — confirm the trust boundary before use.
+**数据边界**：本地扫描默认离线；云端 CI 会把目标内容与报告上传至你指定的 GitHub Actions 环境，使用前请确认信任边界。
 
-**Exception Asset integrity**: any asset that changes scan scope or exemption behavior (e.g., fixtures `MANIFEST.json`, future allowlist / baseline / ignore registry extensions) only takes effect when it matches the built-in trusted hash; modifying an exemption asset never silently widens exemptions — if it exists but the hash mismatches, the exemption is auto-disabled and a full scan resumes (`-SelfDev` only for development environments, with a warning).
+**Exception Asset 完整性**：任何改变扫描范围或豁免行为的资产（如 fixtures `MANIFEST.json`，未来扩展 allowlist / baseline / ignore registry）必须匹配内置 trusted hash 才生效；修改豁免资产不会静默扩大豁免——存在但哈希不匹配时自动禁用豁免、恢复完整扫描（`-SelfDev` 仅开发环境放行并输出 warning）。
 
-**Relationship with third parties**: this repository has no direct affiliation with the official NVIDIA SkillSpector project; its design is inspired by it, independently implemented.
+**与第三方关系**：本仓库与 NVIDIA SkillSpector 官方项目无直接关联，设计思路受其启发，独立实现。
 
-**Disclaimer**: provided under the MIT license without express or implied warranty; the author and contributors are not liable for any direct or indirect loss caused by using this tool or its output (including installing or executing reviewed skills based on reports). See [SECURITY.md](SECURITY.md) and [LICENSE](LICENSE).
+**免责**：本项目按 MIT 许可提供，无明示或默示担保；因使用本工具或其输出（包括依据报告安装、执行被审查技能）造成的任何直接或间接损失，作者与贡献者不承担责任。详见 [SECURITY.md](SECURITY.md) 与 [LICENSE](LICENSE)。
 
-## Credits
+## 🙏 致谢
 
-Design inspired by NVIDIA [SkillSpector](https://github.com/NVIDIA/SkillSpector) (Apache-2.0, AI agent skill security scanner); this project is an independent PowerShell static scanner and contains none of its code.
+设计思路参考 NVIDIA [SkillSpector](https://github.com/NVIDIA/SkillSpector)（Apache-2.0，AI Agent 技能安全扫描器）；本项目为独立实现的 PowerShell 静态扫描器，不含其代码。
 
-Engineering patterns inspired by [skill-vetter](https://github.com/app-incubator-xyz/skill-vetter) (multi-scanner orchestration & explicit SKIP, transparent engine status, explicit review protocol, dependency check forms); independently implemented, contains none of its code.
+工程模式参考 [skill-vetter](https://github.com/app-incubator-xyz/skill-vetter)（多扫描器编排与显式 SKIP、引擎状态透明、显式裁决协议、依赖检查形态）；本项目独立实现，不含其代码。
 
-## License
+## 📄 License
 
-MIT, see [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。
