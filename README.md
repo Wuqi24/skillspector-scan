@@ -183,7 +183,7 @@ git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-sca
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\test\fixtures" test\
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\docker\fixtures" docker\
 
-# 再跑全量回归（T1-T84）
+# 再跑全量回归（T1-T87）
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
