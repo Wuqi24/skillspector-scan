@@ -120,11 +120,12 @@ $instructionIds = @('AR', 'P1', 'SPL', 'MP', 'EA', 'TR', 'AST05')
 # 自扫豁免哨兵：随脚本分发；修改脚本无需更新此常量，改名目录/复制公开文件无法伪造完整扫描器
 $SelfMarker = 'skillspector-scan@self-7f3a9c21e5b84d06'
 # 自扫豁免核心文件集（文件集白名单：目录内出现集外文件 → 不豁免，堵“整包复制+新增文件”绕过）
+# 夹具目录（test/fixtures、docker/fixtures）不随技能分发：避免安装后 Codex 枚举夹具 SKILL.md 造成卡顿；
+# dev 源保留夹具，存在时仍受下方 test/fixtures MANIFEST 白名单与 docker/fixtures 固定文件特判约束
 $selfCoreFiles = @(
   '.dockerignore', '.github/workflows/skill-scan.yml', 'SKILL.md', 'README.md', 'LICENSE',
-  'test/fixtures/MANIFEST.json', 'contracts/reason-codes.md',
+  'contracts/reason-codes.md',
   'agents/openai.yaml', 'data/known_packages.json', 'docker/Dockerfile', 'docker/README.md',
-  'docker/fixtures/evil-test/SKILL.md', 'docker/fixtures/evil-test/scripts/evil.py',
   'references/checklist.md', 'references/scan-patterns.md', 'rules/rules.yaml',
   'scripts/scan.ps1', 'scripts/ast_check.py', 'scripts/lexer.py', 'scripts/test.ps1'
 )
@@ -132,18 +133,15 @@ $selfCoreFiles = @(
 # 核心文件 SHA-256（除 scan.ps1 自身，其哈希无法自嵌）。编辑任一核心文件后运行 -RebakeSelfHashes 刷新。
 $SelfHashes = @{
   '.dockerignore' = '6A109BD62F1C1078D8F206A37B7E76A93765CC59C2457CADF841E46C3A7DB5BB'
-  '.github/workflows/skill-scan.yml' = '753B3ECB33E1A41DD625E56FD297A55744200BE014B5C96505060F6E95B24E27'
+  '.github/workflows/skill-scan.yml' = '0DA9BFDFA7E8BD9C131A6DA9909D1112E07FFFB4797E8CFF4A9E28AA7AA3B068'
   'SKILL.md' = '3D2D30CC6B10D41A0B48D5BFFFE358CC1F88A2858BF447979A5A6740533173A8'
   'README.md' = 'BEE54B268A9A7FD3B9BD8CA0F618FD9E4FA3C2A47F2EA476EDEC9A98D0F3D6B6'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
-  'test/fixtures/MANIFEST.json' = '4D226826EFAA233500151A4899E14D0D0051A1D6D61208BDB64C192BD82943F6'
   'contracts/reason-codes.md' = '0859DB5C0F0C379825ED62D9F134CDBE4FC9906CD5D0CD395996D058E5F1964C'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
   'data/known_packages.json' = '703A9F18DA2F80AC42C4D4D2798BEE59DB2A83EBF45169E65E2569969846A099'
   'docker/Dockerfile' = '6A46DAB6D5E26B8512D10219C472C16F606DDBFB0DCB30DB0832FD811933F99F'
   'docker/README.md' = '7A344A6661AF66F698E3355DCABCBC78B8ECAF99791AC332176F263EB37F3590'
-  'docker/fixtures/evil-test/SKILL.md' = 'A51983B210FBEB5FE91DD2ADA18236E1755ADD2AB26787AB5D4E6F9EC87B29D9'
-  'docker/fixtures/evil-test/scripts/evil.py' = 'F0A93241522671E89CF848F6489D4864143636EF2B90E52F849CA039B132981E'
   'references/checklist.md' = '5FA0A3BE7A4B2FFD6C19686001BC2597C5B35ABC25DBFBAEC803EC2F751BF1C4'
   'references/scan-patterns.md' = '100B4CD762F2C1EA4BB7133132E45F706F9CAE81DEB70CB64795145E7764CF7D'
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
@@ -696,6 +694,11 @@ function Test-SelfSkill {
       if ($rel -like 'test/fixtures/*') {
         # 官方测试夹具目录：仅接受 MANIFEST 收录的文件（防“新增夹具名义”绕过）
         if ($fixtureManifest -notcontains $rel) { return $false }
+        continue
+      }
+      if ($rel -eq 'docker/fixtures/evil-test/SKILL.md' -or $rel -eq 'docker/fixtures/evil-test/scripts/evil.py') {
+        # docker 验证夹具：仅接受这两个固定文件（不随技能分发，dev 源保留）
+        $relPaths += $rel
         continue
       }
       if ($selfCoreFiles -notcontains $rel) { return $false }

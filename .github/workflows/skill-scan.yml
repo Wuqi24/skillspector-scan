@@ -83,6 +83,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Restore fixtures (fixtures branch)
+        if: github.event_name == 'push' || inputs.run_regression
+        shell: bash
+        run: |
+          git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-scan.git "$RUNNER_TEMP/fixtures"
+          mkdir -p test docker
+          cp -r "$RUNNER_TEMP/fixtures/test/fixtures" test/
+          cp -r "$RUNNER_TEMP/fixtures/docker/fixtures" docker/
       - name: Run full regression (test.ps1)
         if: github.event_name == 'push' || inputs.run_regression
         shell: pwsh
@@ -94,6 +102,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Restore docker fixtures (fixtures branch)
+        if: github.event_name == 'push' || inputs.build_docker
+        shell: bash
+        run: |
+          git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-scan.git "$RUNNER_TEMP/fixtures"
+          mkdir -p docker
+          cp -r "$RUNNER_TEMP/fixtures/docker/fixtures" docker/
       - name: Build image
         if: github.event_name == 'push' || inputs.build_docker
         run: docker build -t skillspector-scan -f docker/Dockerfile .
