@@ -2526,7 +2526,10 @@ function New-InspectionLedger {
 function Get-VerifiedDir {
   $root = Get-SkillsRoot
   if ($root) { return Join-Path $root '.verified' }
-  return Join-Path $env:USERPROFILE '.codex\skills\.verified'
+  # 跨平台：Windows 用 USERPROFILE，Linux/macOS 回退 HOME；两者皆空时返回 $null 由调用方按"无已审记录"处理
+  $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $null }
+  if (-not $homeDir) { return $null }
+  return Join-Path $homeDir '.codex\skills\.verified'
 }
 
 function Get-ManifestForSkill {
@@ -2582,7 +2585,9 @@ function Get-ResultFingerprints {
 function Get-VerificationStatus {
   param([string]$root, $curFp = $null)
   $ti = Get-TargetIdentity $root
-  $vp = Join-Path (Get-VerifiedDir) ($ti.identity + '.json')
+  $vd = Get-VerifiedDir
+  if (-not $vd) { return [pscustomobject]@{ status = 'none'; decision = ''; date = '' } }
+  $vp = Join-Path $vd ($ti.identity + '.json')
   if (-not (Test-Path -LiteralPath $vp)) {
     return [pscustomobject]@{ status = 'none'; decision = ''; date = '' }
   }
@@ -2657,6 +2662,7 @@ function Invoke-MarkVerified {
     symlinks = $man.symlinks
   }
   $dir = Get-VerifiedDir
+  if (-not $dir) { throw '无法定位 .verified 目录（USERPROFILE/HOME 均未设置）' }
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   $vp = Join-Path $dir ($ti.identity + '.json')
   Write-AtomicJson $vp $record
