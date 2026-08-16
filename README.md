@@ -199,7 +199,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 - **Exception Asset 完整性**：任何改变扫描范围或豁免行为的资产（如 fixtures `MANIFEST.json`，未来扩展 allowlist / baseline / ignore registry）必须匹配内置 trusted hash 才生效；修改豁免资产不会静默扩大豁免——存在但哈希不匹配时自动禁用豁免、恢复完整扫描（`-SelfDev` 仅开发环境放行并输出 warning）
 - 本仓库与 NVIDIA SkillSpector 官方项目无直接关联，设计思路受其启发，独立实现
 
-## 风险与责任说明（Disclaimer）
+## 风险与责任说明
 
 **工具性质**：本工具是启发式静态分析，不是安全认证、不构成安全保证；无法检测所有风险（未知模式、混淆/加密内容、运行时行为、供应链下游变化等）。
 
