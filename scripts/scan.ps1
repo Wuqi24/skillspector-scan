@@ -147,7 +147,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = '707A14B86429A841BDFA55C3E341514FB33D607991EC126C6995C7822547AE6D'
+  'scripts/test.ps1' = 'E6D5621E0DFE46F4269A21C9E90FDF84A64C388EC72AEBBB3082A3F45D8F5A81'
 }
 # __SELF_HASHES_END__
 # __EXCEPTION_ASSET_HASHES_BEGIN__
@@ -2022,6 +2022,75 @@ function Invoke-ScanPath {
     osv = $engines['osv']; git_history = $engines['git_history']; manifest = $engines['manifest']
     external_aguara = $engines['external_aguara']; external_skill_scanner = $engines['external_skill_scanner']
   }
+  # Phase 4C：Inventory / Completeness / content_hash（旁路审计字段，不参与评分；只描述真实扫描边界）
+  $inventory = New-Object System.Collections.ArrayList
+  $knownIgnoreNames = @('.DS_Store', 'Thumbs.db')
+  foreach ($f in $allFiles) {
+    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+    $ext = $f.Extension.ToLower()
+    $inc = $false
+    $reason = $null
+    if ($f.Name -like '.skillspector-baseline*') { $reason = 'baseline_metadata' }
+    elseif ($f.Name -in $knownIgnoreNames) { $reason = 'ignored_metadata' }
+    elseif ($fileStatus.ContainsKey($f.FullName) -and $fileStatus[$f.FullName] -eq 'skipped') { $reason = $skipReasons[$f.FullName] }
+    elseif ($fileStatus.ContainsKey($f.FullName) -and $fileStatus[$f.FullName] -eq 'partial') { $reason = $skipReasons[$f.FullName] }
+    elseif (@($scanFiles | Where-Object { $_.FullName -eq $f.FullName }).Count -gt 0) { $inc = $true }
+    else { $reason = 'not_classified' }
+    $ft = if ($assetExt -contains $ext) { 'binary_asset' } elseif ($binaryExt -contains $ext) { 'binary' } elseif ($knownTextExt -contains $ext) { 'text' } else { 'unknown' }
+    [void]$inventory.Add([pscustomobject]@{
+      path = $rel
+      size = $f.Length
+      sha256 = Get-HashOfFile $f.FullName
+      file_type = $ft
+      included = $inc
+      exclude_reason = $reason
+    })
+  }
+  # 目录级权限失败也是扫描边界的一部分（保持 skipped 清单语义，不参与 finding）
+  foreach ($de in @($skipped | Where-Object { -not (Test-Path -LiteralPath $_.file -PathType Leaf) })) {
+    if ($de.reason -eq 'permission_denied') {
+      $relDir = $de.file.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+      [void]$inventory.Add([pscustomobject]@{
+        path = $relDir
+        size = 0
+        sha256 = $null
+        file_type = 'directory'
+        included = $false
+        exclude_reason = 'permission_denied'
+      })
+    }
+  }
+  $result.inventory = @($inventory)
+  # content_hash：全部 inventory 按路径排序的 sha256 聚合（内容审计身份；target_id 路径身份保持不变）
+  $chInput = [ordered]@{}
+  foreach ($it in @($inventory | Sort-Object path)) { $chInput[$it.path] = $it.sha256 }
+  $result.content_hash = Get-Sha256Hex (ConvertTo-CanonicalJson $chInput)
+  # completeness：覆盖质量，独立于 score/findings（skipped/degraded/failed 只降覆盖，不改风险）
+  $engineTotalC = @($engines.Keys).Count
+  $engineOkC = @($engines.Keys | Where-Object { $engines[$_] -in @('on', 'running') }).Count
+  $filesTotalC = @($inventory).Count
+  $filesScannedC = @($inventory | Where-Object { $_.included }).Count
+  $compFilesC = if ($filesTotalC -gt 0) { [Math]::Round($filesScannedC / $filesTotalC, 4) } else { 1.0 }
+  $compRulesC = if ($registryLoaded) { 1.0 } else { 0.0 }
+  $compEnginesC = if ($engineTotalC -gt 0) { [Math]::Round($engineOkC / $engineTotalC, 4) } else { 1.0 }
+  $compDepsC = if ($engines['deps'] -eq 'on') { 1.0 } elseif ($engines['deps'] -eq 'degraded') { 0.5 } else { 0.0 }
+  $compHistC = if ($engines['git_history'] -eq 'on') { 1.0 } elseif ($engines['git_history'] -eq 'degraded') { 0.5 } else { 0.0 }
+  $extOnC = 0; $extTotalC = 0
+  foreach ($k in @('external_aguara', 'external_skill_scanner')) {
+    if ($engines[$k] -eq 'on') { $extOnC++; $extTotalC++ }
+    elseif ($engines[$k] -eq 'skipped' -or $engines[$k] -eq 'degraded' -or $engines[$k] -eq 'failed') { $extTotalC++ }
+  }
+  $compExtC = if ($extTotalC -gt 0) { [Math]::Round($extOnC / $extTotalC, 4) } else { 1.0 }
+  $compValsC = @($compFilesC, $compRulesC, $compEnginesC, $compDepsC, $compHistC, $compExtC)
+  $result.completeness = [pscustomobject]@{
+    overall = [Math]::Round((($compValsC | Measure-Object -Average).Average), 4)
+    files = $compFilesC
+    rules = $compRulesC
+    engines = $compEnginesC
+    dependencies = $compDepsC
+    history = $compHistC
+    external = $compExtC
+  }
   if ($briefMode) {
     $result.reference_findings = @($findings | Where-Object { $_.doc })
     $result.correlation_findings = @($findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })
@@ -2408,6 +2477,34 @@ function New-InspectionLedger {
         default { 'degraded' }
       }
       $rc = Get-LedgerReasonCode -engine $k -status $status -errorText $errText
+      # Phase 4C：error 独立字段表示原因（status 枚举保持不变）
+      $errObj = $null
+      if ($status -ne 'executed') {
+        $errCode = ($rc -replace '-', '_').ToUpper()
+        $errMsg = switch ($rc) {
+          'binary_asset' { '文件为已知静态资产，跳过文本分析' }
+          'binary_content' { '二进制内容，无法文本分析' }
+          'oversized' { '超过单文件分析上限' }
+          'permission_denied' { '目录不可读（权限）' }
+          'unsupported_encoding' { '编码不受支持' }
+          'external_missing' { '外部扫描器缺失或不可用' }
+          'not_applicable' { '当前输入/配置下不适用' }
+          'no_files' { '无文件可扫描' }
+          'parse_error' { '解析失败' }
+          'dependency_unresolved' { '依赖解析或漏洞查询失败' }
+          'disabled_by_config' { '按配置禁用' }
+          default { '未知原因' }
+        }
+        $errSrc = switch -Regex ($k) {
+          'external' { 'external' }
+          'osv' { 'network' }
+          'git_history' { 'git' }
+          'python_ast|js|lexer' { 'code_analysis' }
+          'deps|manifest' { 'manifest' }
+          default { 'engine' }
+        }
+        $errObj = [pscustomobject]@{ code = $errCode; message = $errMsg; source = $errSrc }
+      }
       [void]$entries.Add([pscustomobject]@{
         entry_id = (Get-Sha256Hex ($runId + '|' + $tid + '|' + $k)).Substring(0, 24)
         run_id = $runId
@@ -2418,7 +2515,7 @@ function New-InspectionLedger {
         coverage = $null
         started_at = $null
         finished_at = $null
-        error = $null
+        error = $errObj
       })
     }
   }
