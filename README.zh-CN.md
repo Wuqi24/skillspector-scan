@@ -1,7 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# skillspector-scan
-
+# skillspector-scan 中文文档
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Release](https://img.shields.io/github/v/release/Wuqi24/skillspector-scan)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
