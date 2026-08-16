@@ -147,7 +147,7 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = 'E6D5621E0DFE46F4269A21C9E90FDF84A64C388EC72AEBBB3082A3F45D8F5A81'
+  'scripts/test.ps1' = '94B993227E5E311F0AD45570C4E92DE34C17DB1537C1AC7F1402AC46F79B28F5'
 }
 # __SELF_HASHES_END__
 # __EXCEPTION_ASSET_HASHES_BEGIN__
@@ -2091,13 +2091,14 @@ function Invoke-ScanPath {
     history = $compHistC
     external = $compExtC
   }
+  # Phase 7A：普通/简报共用已审状态（结果指纹绑定：输入+环境+结果一致才 valid）
+  $result.verification = Get-VerificationStatus $root (Get-ResultFingerprints $findings $evidencePool)
   if ($briefMode) {
     $result.reference_findings = @($findings | Where-Object { $_.doc })
     $result.correlation_findings = @($findings | Where-Object { $_.id -eq 'CREDENTIAL_LOOPBACK_COEXIST' })
     $result.dependency_findings = @($depResult.Brief)
     $result.behavior_summary = @(Get-BehaviorSummary $findings)
     $result.top3 = @(Get-BriefTop3 $findings)
-    $result.verification = Get-VerificationStatus $root $result.scan_files
   }
   return $result
 }
@@ -2561,8 +2562,25 @@ function Write-AtomicJson {
   Move-Item -LiteralPath $tmp -Destination $path -Force
 }
 
+function Get-ResultFingerprints {
+  # Phase 7A：结果指纹（只绑定输出结论，不参与评分/排序/决策）
+  # finding_fingerprint：正式风险 Findings（非 doc、非 suppressed、参与评分）的 finding_id 排序聚合
+  # evidence_fingerprint：上述 finding 引用的 evidence_id 排序聚合（普通/简报一致，correlation 不计分不纳入）
+  param($findings, $evidence)
+  $risk = @($findings | Where-Object { -not $_.doc -and -not ($_.PSObject.Properties['suppressed'] -and $_.suppressed) -and $_.score })
+  $ffp = Get-Sha256Hex (ConvertTo-CanonicalJson @($risk | ForEach-Object { [string]$_.finding_id } | Sort-Object))
+  $refs = New-Object System.Collections.ArrayList
+  foreach ($f in $risk) {
+    foreach ($r in @($f.evidence_refs)) {
+      if ($refs -notcontains $r) { [void]$refs.Add($r) }
+    }
+  }
+  $efp = Get-Sha256Hex (ConvertTo-CanonicalJson @($evidence | Where-Object { $refs -contains $_.evidence_id } | ForEach-Object { [string]$_.evidence_id } | Sort-Object))
+  return [pscustomobject]@{ finding_fingerprint = $ffp; evidence_fingerprint = $efp }
+}
+
 function Get-VerificationStatus {
-  param([string]$root)
+  param([string]$root, $curFp = $null)
   $ti = Get-TargetIdentity $root
   $vp = Join-Path (Get-VerifiedDir) ($ti.identity + '.json')
   if (-not (Test-Path -LiteralPath $vp)) {
@@ -2576,7 +2594,16 @@ function Get-VerificationStatus {
     $oldFiles = Get-Sha256Hex (ConvertTo-CanonicalJson $v.files)
     $sameFiles = ($curFiles -eq $oldFiles)
     $sameEnv = ($v.scanner_version -eq $scannerVersion) -and ($v.rules_hash -eq $hashes.rules_hash) -and ($v.config_hash -eq $hashes.config_hash) -and ($v.known_packages_hash -eq $hashes.known_packages_hash) -and ($v.schema_version -eq $registry.schema_version) -and ($v.schema_hash -eq $hashes.schema_hash)
-    if ($sameFiles -and $sameEnv) { return [pscustomobject]@{ status = 'valid'; decision = $v.decision; date = $v.verified_at } }
+    # Phase 7A：结果指纹绑定（旧记录无指纹字段 → 无法证明结果一致，视为未绑定）
+    $unbound = [string]::IsNullOrEmpty([string]$v.finding_fingerprint) -or [string]::IsNullOrEmpty([string]$v.evidence_fingerprint)
+    $sameFp = $false
+    if (-not $unbound -and $curFp) {
+      $sameFp = ([string]$v.finding_fingerprint -eq [string]$curFp.finding_fingerprint) -and ([string]$v.evidence_fingerprint -eq [string]$curFp.evidence_fingerprint)
+    }
+    if ($sameFiles -and $sameEnv) {
+      if ($sameFp) { return [pscustomobject]@{ status = 'valid'; decision = $v.decision; date = $v.verified_at } }
+      return [pscustomobject]@{ status = 'stale_result'; decision = $v.decision; date = $v.verified_at; unbound = $unbound }
+    }
     if ($sameFiles -and -not $sameEnv) { return [pscustomobject]@{ status = 'stale_env'; decision = $v.decision; date = $v.verified_at } }
     return [pscustomobject]@{ status = 'stale_content'; decision = $v.decision; date = $v.verified_at }
   } catch {
@@ -2608,6 +2635,7 @@ function Invoke-MarkVerified {
     schema_version = $registry.schema_version
     schema_hash = $hashes.schema_hash
   }
+  $resultFp = Get-ResultFingerprints $r.findings $r.evidence
   $record = [ordered]@{
     decision = $decision
     verified_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -2621,6 +2649,8 @@ function Invoke-MarkVerified {
     schema_version = $registry.schema_version
     schema_hash = $hashes.schema_hash
     report_fingerprint = (Get-Sha256Hex (ConvertTo-CanonicalJson $fpInput))
+    finding_fingerprint = $resultFp.finding_fingerprint
+    evidence_fingerprint = $resultFp.evidence_fingerprint
     target_identity = $ti.identity
     analysis_status = 'complete'
     files = $man.files
@@ -2640,6 +2670,10 @@ function Get-VerificationText {
     'valid' { return ('上次已审：' + $v.decision + '（' + $v.date + '）') }
     'stale_env' { return ('扫描规则或配置已更新，上次结论可能失效（' + $v.date + '：' + $v.decision + '）') }
     'stale_content' { return ('内容已变，上次结论可能失效（' + $v.date + '：' + $v.decision + '）') }
+    'stale_result' {
+      if ($v.unbound) { return ('旧记录无结果指纹绑定，建议重新审核（' + $v.date + '：' + $v.decision + '）') }
+      return ('扫描器行为或规则解释已变化，上次结论可能失效（' + $v.date + '：' + $v.decision + '）')
+    }
     default { return '无已审记录' }
   }
 }
