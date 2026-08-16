@@ -135,7 +135,7 @@ $SelfHashes = @{
   '.dockerignore' = '6A109BD62F1C1078D8F206A37B7E76A93765CC59C2457CADF841E46C3A7DB5BB'
   '.github/workflows/skill-scan.yml' = '0DA9BFDFA7E8BD9C131A6DA9909D1112E07FFFB4797E8CFF4A9E28AA7AA3B068'
   'SKILL.md' = '3D2D30CC6B10D41A0B48D5BFFFE358CC1F88A2858BF447979A5A6740533173A8'
-  'README.md' = 'BEE54B268A9A7FD3B9BD8CA0F618FD9E4FA3C2A47F2EA476EDEC9A98D0F3D6B6'
+  'README.md' = '0FB77D5EF6302F1238CCBF2C43E4244DC42A4297C23E6E1FFC862F9A100D236B'
   'LICENSE' = '9BA0B05F574B91E98B15A912BE0DF6466544AE4E4F82108B58B4814B7F9B2E68'
   'contracts/reason-codes.md' = '0859DB5C0F0C379825ED62D9F134CDBE4FC9906CD5D0CD395996D058E5F1964C'
   'agents/openai.yaml' = 'E6C82E9AA477A2A8107FFB081EF5AB9FA61E67065C54F1632CE15842E6E618BC'
@@ -147,9 +147,15 @@ $SelfHashes = @{
   'rules/rules.yaml' = 'F1CB18C73370BA7BD4EDA7E1F13A72B295704FB3F44C75610C736A501C3075F8'
   'scripts/ast_check.py' = 'E1B6E8B78423C05B61790E7AC486DEA3694644A226F962D744F4181828125A5F'
   'scripts/lexer.py' = '09D9FDD1A0DAE38FA52370D3DE22AEC52DAA250823D97B14E9AA6904DCE877E2'
-  'scripts/test.ps1' = 'C2E73A4163DACDACD11AA9FCA2A67B1CE44242CA40CD7975F22DF7D878658083'
+  'scripts/test.ps1' = '707A14B86429A841BDFA55C3E341514FB33D607991EC126C6995C7822547AE6D'
 }
 # __SELF_HASHES_END__
+# __EXCEPTION_ASSET_HASHES_BEGIN__
+# Exception Asset SHA-256：影响扫描范围/豁免行为的资产；存在时必须匹配，不存在时跳过
+$ExceptionAssetHashes = @{
+  'test/fixtures/MANIFEST.json' = '4D226826EFAA233500151A4899E14D0D0051A1D6D61208BDB64C192BD82943F6'
+}
+# __EXCEPTION_ASSET_HASHES_END__
 $astScript = Join-Path $PSScriptRoot 'ast_check.py'
 $lexerScript = Join-Path $PSScriptRoot 'lexer.py'
 $scriptPath = $MyInvocation.MyCommand.Path
@@ -470,7 +476,7 @@ function Get-RegistryHashes {
 }
 
 function Write-SelfHashes {
-  # 重算核心文件（除 scan.ps1 自身）的 SHA-256，重写 scan.ps1 标记块内的 $SelfHashes 常量
+  # 重算核心文件（除 scan.ps1 自身）与 Exception Asset 的 SHA-256，重写 scan.ps1 两个标记块
   $skillDir = Split-Path $PSScriptRoot -Parent
   $lines = New-Object System.Collections.ArrayList
   [void]$lines.Add('# __SELF_HASHES_BEGIN__')
@@ -484,13 +490,23 @@ function Write-SelfHashes {
   }
   [void]$lines.Add('}')
   [void]$lines.Add('# __SELF_HASHES_END__')
+  [void]$lines.Add('# __EXCEPTION_ASSET_HASHES_BEGIN__')
+  [void]$lines.Add('# Exception Asset SHA-256：影响扫描范围/豁免行为的资产；存在时必须匹配，不存在时跳过')
+  [void]$lines.Add('$ExceptionAssetHashes = @{')
+  foreach ($k in @($ExceptionAssetHashes.Keys)) {
+    $hp = Join-Path $skillDir ($k -replace '/', '\')
+    $h = if (Test-Path -LiteralPath $hp) { Get-NormalizedFileHash $hp } else { $ExceptionAssetHashes[$k] }
+    [void]$lines.Add(("  '" + $k + "' = '" + $h + "'"))
+  }
+  [void]$lines.Add('}')
+  [void]$lines.Add('# __EXCEPTION_ASSET_HASHES_END__')
   $block = ($lines -join "`r`n")
   $text = [System.IO.File]::ReadAllText($scriptPath, [System.Text.Encoding]::UTF8)
-  $rx = [regex]'# __SELF_HASHES_BEGIN__[\s\S]*?# __SELF_HASHES_END__'
+  $rx = [regex]'# __SELF_HASHES_BEGIN__[\s\S]*?# __EXCEPTION_ASSET_HASHES_END__'
   if (-not $rx.IsMatch($text)) { Write-Output '错误: scan.ps1 中缺少哈希标记块，无法刷新'; exit 2 }
   $text = $rx.Replace($text, $block, 1)
   [System.IO.File]::WriteAllText($scriptPath, $text, (New-Object System.Text.UTF8Encoding($true)))
-  Write-Output ('自扫哈希已刷新（' + ($selfCoreFiles.Count - 1) + ' 个核心文件，除 scan.ps1 自身）')
+  Write-Output ('自扫哈希已刷新（' + ($selfCoreFiles.Count - 1) + ' 个核心文件 + ' + $ExceptionAssetHashes.Count + ' 个 Exception Asset，除 scan.ps1 自身）')
 }
 
 function Write-RegistryStats {
@@ -707,12 +723,28 @@ function Test-SelfSkill {
     foreach ($core in $selfCoreFiles) {
       if ($relPaths -notcontains $core) { return $false }
     }
-    # 3) 哈希白名单：校验除 scan.ps1 外的核心文件；-SelfDev 跳过哈希（保留文件集校验），供开发期使用
+    # 3) 哈希白名单：核心文件必须存在且匹配；Exception Asset 存在则必须匹配 trusted hash，不存在跳过；
+    #    hash mismatch → 禁用整个豁免（不允许 partial trust）；-SelfDev 跳过哈希（保留文件集校验），供开发期使用
     if (-not $SelfDev) {
       foreach ($k in @($SelfHashes.Keys)) {
         $hp = Join-Path $scanPath $k
         if (-not (Test-Path -LiteralPath $hp)) { return $false }
         if ((Get-NormalizedFileHash $hp) -ne $SelfHashes[$k]) { return $false }
+      }
+      foreach ($k in @($ExceptionAssetHashes.Keys)) {
+        $hp = Join-Path $scanPath $k
+        if (-not (Test-Path -LiteralPath $hp)) { continue }
+        if ((Get-NormalizedFileHash $hp) -ne $ExceptionAssetHashes[$k]) {
+          Write-Warning ('Exception Asset integrity failure: ' + $k + ' hash mismatch; exemption disabled')
+          return $false
+        }
+      }
+    } else {
+      foreach ($k in @($ExceptionAssetHashes.Keys)) {
+        $hp = Join-Path $scanPath $k
+        if ((Test-Path -LiteralPath $hp) -and (Get-NormalizedFileHash $hp) -ne $ExceptionAssetHashes[$k]) {
+          Write-Warning ('Exception Asset integrity failure (dev mode bypass): ' + $k)
+        }
       }
     }
     return $true

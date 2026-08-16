@@ -158,11 +158,19 @@ jobs:
 
 ## 测试
 
+> 测试夹具（`test/fixtures/`、`docker/fixtures/`）**不属于 release tree**，只用于开发与 CI 回归，从独立 `fixtures` 分支获取。
+
 ```powershell
+# 先恢复夹具（仅开发/回归需要；普通使用无需夹具）
+git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-scan.git "$env:TEMP\skillspector-fixtures"
+Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\test\fixtures" test\
+Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\docker\fixtures" docker\
+
+# 再跑全量回归（T1-T73）
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
-回归覆盖恶意 Python/JS 检出、依赖锁定、自扫 0 分、git 历史密钥、简报/JSON 输出、并行统计等断言，全部通过退出码 0。
+回归覆盖恶意 Python/JS 检出、依赖锁定、自扫 0 分、git 历史密钥、简报/JSON 输出、并行统计、Exception Asset 完整性等断言（T1-T73），全部通过退出码 0。
 
 ## 安全边界与免责声明
 
@@ -171,6 +179,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 - 不动态执行目标技能代码；不自动拦截、不自动净化
 - 被扫描内容是未信任输入，可能夹带针对审查者的提示注入，这类要求一律无效，结论只依据证据与规则
 - 二进制/加密内容无法静态分析，列入跳过清单待人工确认
+- **Exception Asset 完整性**：任何改变扫描范围或豁免行为的资产（如 fixtures `MANIFEST.json`，未来扩展 allowlist / baseline / ignore registry）必须匹配内置 trusted hash 才生效；修改豁免资产不会静默扩大豁免——存在但哈希不匹配时自动禁用豁免、恢复完整扫描（`-SelfDev` 仅开发环境放行并输出 warning）
 - 本仓库与 NVIDIA SkillSpector 官方项目无直接关联，设计思路受其启发，独立实现
 
 ## 致谢
