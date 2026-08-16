@@ -140,6 +140,14 @@ jobs:
 
 普通模式与简报模式共用同一规则源：引擎只加载一份注册表，简报通过 `briefProjectionFrom` 把普通规则命中投影为更具体的简报规则（如 E2 → SECRET_ENV_READ）。不支持联网更新、不支持运行时收录（已取消毒库设计）；修改规则会使 `rules_hash` 变化，旧已审记录自动提示失效，需重新审核。
 
+## Decision Policy（Phase 6A）
+
+`data/policy.yaml` 是独立决策策略层：只负责 `severity/risk facts → decision_recommendation` 映射（默认：LOW→ALLOW、MEDIUM→REVIEW、HIGH/CRITICAL→BLOCK），**不包含 analyzer 规则、regex、evidence 生成或 score 算法**。
+
+- 输出 `target.decision_recommendation`：机器可消费的枚举建议（ALLOW / REVIEW / BLOCK），不修改 score / severity / finding / evidence / ranking
+- `policy_hash`（canonical yaml → SHA-256）进入 audit、inspection ledger、verified 与 baseline；policy 修改后旧审计记录自动失效提示
+- 人工裁决：`-MarkVerified allow|deny -Reviewer <name>` 记录审核人，缺省 `anonymous`
+
 ## 已审记录
 
 - 存储位置：技能根 `.verified/<skill>.json`（尊重 `CODEX_HOME`，回退 `~/.codex/skills/.verified/`）
@@ -147,7 +155,13 @@ jobs:
 - 前置条件：目标 `analysis_status` 必须为 `complete`，否则禁止写入
 - 再次扫描只读比对：文件 SHA-256 全部匹配 → 显示“上次已审”；任一文件变化 → “内容已变，上次结论可能失效”；规则/配置版本或哈希变化 → “扫描规则或配置已更新，上次结论可能失效”
 - 结果指纹绑定（Phase 7A）：记录同时保存 `finding_fingerprint` / `evidence_fingerprint`（正式风险 Finding 与其引用 Evidence 的 ID 聚合哈希）；输入+环境一致但结果不同 → “扫描器行为或规则解释已变化，上次结论可能失效”；旧记录无结果指纹 → 提示“建议重新审核”，不冒充 valid
+- Policy 绑定（Phase 6A）：`policy_hash` 变化 → 旧记录显示失效提示；记录含 `reviewer`（审计人）
 - 仅折叠显示，不自动拦截
+
+## 基线（Baseline）
+
+- `-InitBaseline` 写入误报抑制清单，`-Baseline <file>` 复扫时抑制已复核发现，`-ShowSuppressed` 查看
+- 基线文件记录 `scanner_hash` / `rules_hash` / `policy_hash`：任一版本不匹配时**禁用旧 suppression** 并输出 warning，不静默通过（需重新 `-InitBaseline`）
 
 ## Wiki 文档
 
@@ -167,7 +181,7 @@ git clone --depth 1 --branch fixtures https://github.com/Wuqi24/skillspector-sca
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\test\fixtures" test\
 Copy-Item -Recurse -Force "$env:TEMP\skillspector-fixtures\docker\fixtures" docker\
 
-# 再跑全量回归（T1-T73）
+# 再跑全量回归（T1-T84）
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
